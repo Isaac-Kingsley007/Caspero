@@ -9,8 +9,8 @@ const config: Config = {
     theme: {
         extend: {
             fontFamily: {
-                sans: ['"Titillium Web"', 'sans-serif'],
-                titillium: ['"Titillium Web"', 'sans-serif'],
+                sans: ['Montserrat', 'sans-serif'],
+                montserrat: ['Montserrat', 'sans-serif'],
             },
         },
     },

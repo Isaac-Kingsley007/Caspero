@@ -7,6 +7,7 @@ import EmptyState from '@/components/ui/EmptyState';
 import Button from '@/components/ui/Button';
 import Modal from '@/components/ui/Modal';
 import EscrowDetails from '@/components/escrow/EscrowDetails';
+import { WalletIcon, AddIcon } from '@/components/ui/Icon';
 
 // Sample data - will be replaced with real data
 const sampleMyEscrows = [
@@ -96,7 +97,7 @@ export default function MyEscrows() {
                     </p>
                 </div>
                 <EmptyState
-                    icon="👛"
+                    icon={<WalletIcon size="xl" className="text-gray-500" />}
                     title="Wallet not connected"
                     description="Connect your wallet to view and manage your escrows."
                     actionLabel="Connect Wallet"
@@ -119,7 +120,8 @@ export default function MyEscrows() {
                     </p>
                 </div>
                 <Button variant="primary" onClick={() => router.push('/create')}>
-                    + Create Escrow
+                    <AddIcon size="sm" className="mr-2" />
+                    Create Escrow
                 </Button>
             </div>
 
@@ -161,7 +163,7 @@ export default function MyEscrows() {
                 </div>
             ) : (
                 <EmptyState
-                    icon="📦"
+                    icon={<AddIcon size="xl" className="text-gray-500" />}
                     title="No escrows yet"
                     description="Create your first group escrow to start pooling funds with friends."
                     actionLabel="Create Escrow"

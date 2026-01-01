@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import EmptyState from '@/components/ui/EmptyState';
+import Icon from '@/components/ui/Icon';
 
 interface HistoryItem {
     id: string;
@@ -71,12 +72,12 @@ export default function History() {
 
     const getActionIcon = (type: string) => {
         const icons = {
-            create: '✨',
-            join: '🤝',
-            withdraw: '💰',
-            cancel: '❌'
+            create: 'add_circle',
+            join: 'group_add',
+            withdraw: 'account_balance_wallet',
+            cancel: 'cancel'
         };
-        return icons[type as keyof typeof icons] || '📝';
+        return icons[type as keyof typeof icons] || 'description';
     };
 
     if (!walletConnected) {
@@ -91,7 +92,7 @@ export default function History() {
                     </p>
                 </div>
                 <EmptyState
-                    icon="👛"
+                    icon={<Icon name="account_balance_wallet" size="xl" className="text-gray-500" />}
                     title="Wallet not connected"
                     description="Connect your wallet to view your transaction history."
                 />
@@ -117,7 +118,9 @@ export default function History() {
                             <div key={item.id}>
                                 <div className="flex items-center justify-between py-4">
                                     <div className="flex items-center gap-4">
-                                        <div className="text-2xl">{getActionIcon(item.type)}</div>
+                                        <div className="w-10 h-10 bg-gray-800 rounded-full flex items-center justify-center">
+                                            <Icon name={getActionIcon(item.type)} className="text-gray-400" />
+                                        </div>
                                         <div>
                                             <p className="text-base font-medium text-gray-100">
                                                 {getActionLabel(item.type)}
@@ -145,7 +148,7 @@ export default function History() {
                 </div>
             ) : (
                 <EmptyState
-                    icon="📜"
+                    icon={<Icon name="history" size="xl" className="text-gray-500" />}
                     title="No history yet"
                     description="Your transaction history will appear here once you start using escrows."
                 />

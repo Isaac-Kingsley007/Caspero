@@ -3,6 +3,7 @@
 import StatusBadge from '@/components/ui/StatusBadge';
 import ProgressBar from '@/components/ui/ProgressBar';
 import Button from '@/components/ui/Button';
+import Icon from '@/components/ui/Icon';
 
 interface Participant {
     address: string;
@@ -128,8 +129,18 @@ export default function EscrowDetails({
                 </div>
                 <div className="flex items-center justify-between py-3 border-b border-gray-800">
                     <span className="text-gray-400">Password Protected</span>
-                    <span className="text-gray-100">
-                        {hasPassword ? '🔒 Yes' : '🔓 No'}
+                    <span className="text-gray-100 flex items-center gap-2">
+                        {hasPassword ? (
+                            <>
+                                <Icon name="lock" size="sm" />
+                                Yes
+                            </>
+                        ) : (
+                            <>
+                                <Icon name="lock_open" size="sm" />
+                                No
+                            </>
+                        )}
                     </span>
                 </div>
                 <div className="flex items-center justify-between py-3 border-b border-gray-800">
@@ -165,7 +176,10 @@ export default function EscrowDetails({
                                     {formatCSPR(participant.amount)} CSPR
                                 </p>
                                 {participant.withdrawn && (
-                                    <p className="text-xs text-green-400">✓ Withdrawn</p>
+                                    <p className="text-xs text-green-400 flex items-center gap-1">
+                                        <Icon name="check" size="sm" />
+                                        Withdrawn
+                                    </p>
                                 )}
                             </div>
                         </div>

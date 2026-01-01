@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
+import { InfoIcon } from '@/components/ui/Icon';
 
 interface JoinEscrowFormProps {
     escrowCode: string;
@@ -79,8 +80,9 @@ export default function JoinEscrowForm({
 
             {/* Info Message */}
             <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
-                <p className="text-sm text-blue-400">
-                    ℹ️ Your CSPR will be staked to earn yield while the escrow is active.
+                <p className="text-sm text-blue-400 flex items-start gap-2">
+                    <InfoIcon size="sm" className="mt-0.5 shrink-0" />
+                    Your CSPR will be staked to earn yield while the escrow is active.
                     You can withdraw your share plus proportional yield once the escrow is complete.
                 </p>
             </div>

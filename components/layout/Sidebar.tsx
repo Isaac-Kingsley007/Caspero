@@ -2,17 +2,47 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect } from 'react';
+import { HomeIcon, WalletIcon, HistoryIcon, MenuIcon, CloseIcon } from '@/components/ui/Icon';
+import { useSidebar } from '@/components/providers/SidebarProvider';
 
 const navigation = [
-    { name: 'Browse Groups', href: '/', icon: '🤝' },
-    { name: 'My Escrows', href: '/my-escrows', icon: '💼' },
-    { name: 'History', href: '/history', icon: '📜' },
+    { name: 'Browse Groups', href: '/', icon: HomeIcon },
+    { name: 'My Escrows', href: '/my-escrows', icon: WalletIcon },
+    { name: 'History', href: '/history', icon: HistoryIcon },
 ];
+
+// Breadcrumb mapping
+
 
 export default function Sidebar() {
     const pathname = usePathname();
-    const [isCollapsed, setIsCollapsed] = useState(false);
+    const { isCollapsed, setIsCollapsed } = useSidebar();
+
+    // Auto-collapse sidebar on mobile by default
+    useEffect(() => {
+        const handleResize = () => {
+            if (window.innerWidth < 1024) { // lg breakpoint
+                setIsCollapsed(true);
+            }
+        };
+
+        // Set initial state
+        handleResize();
+
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, [setIsCollapsed]);
+
+    // Close sidebar when navigating on mobile
+    useEffect(() => {
+        if (window.innerWidth < 1024) {
+            setIsCollapsed(true);
+        }
+    }, [pathname, setIsCollapsed]);
+
+    // Get breadcrumbs for current path
+
 
     return (
         <>
@@ -27,34 +57,37 @@ export default function Sidebar() {
             {/* Sidebar */}
             <aside
                 className={`
-          fixed lg:static inset-y-0 left-0 z-50
-          flex flex-col
-          bg-gray-900 border-r border-gray-800
-          transition-all duration-300
-          ${isCollapsed ? '-translate-x-full lg:translate-x-0 lg:w-20' : 'w-64'}
-        `}
+                    fixed lg:static inset-y-0 left-0 z-50
+                    flex flex-col
+                    bg-gray-900 border-r border-gray-800
+                    transition-all duration-300 ease-in-out
+                    ${isCollapsed
+                        ? '-translate-x-full lg:translate-x-0 lg:w-20'
+                        : 'translate-x-0 w-64'
+                    }
+                `}
             >
                 {/* Logo & Brand */}
                 <div className="flex items-center justify-between p-6 border-b border-gray-800">
-                    <Link href="/" className="flex items-center space-x-3">
-                        <div className="w-10 h-10 bg-green-500 rounded-lg flex items-center justify-center text-2xl">
-                            💰
+                    <div className="flex items-center space-x-3">
+                        <div
+                            onClick={() => setIsCollapsed(!isCollapsed)}
+                            className="w-10 h-10 bg-green-500 rounded-lg flex items-center justify-center cursor-pointer hover:bg-green-600 transition-colors"
+                        >
+                            <WalletIcon className="text-white" size="lg" />
                         </div>
                         {!isCollapsed && (
-                            <div>
-                                <h1 className="text-lg font-bold text-gray-100">GroupEscrow</h1>
-                                <p className="text-xs text-gray-400">Split & Stake</p>
-                            </div>
+                            <Link href="/">
+                                <div>
+                                    <h1 className="text-lg font-bold text-gray-100">GroupEscrow</h1>
+                                    <p className="text-xs text-gray-400">Split & Stake</p>
+                                </div>
+                            </Link>
                         )}
-                    </Link>
+                    </div>
 
                     {/* Collapse Button - Desktop Only */}
-                    <button
-                        onClick={() => setIsCollapsed(!isCollapsed)}
-                        className="hidden lg:block text-gray-400 hover:text-gray-100"
-                    >
-                        {isCollapsed ? '→' : '←'}
-                    </button>
+
                 </div>
 
                 {/* Navigation Links */}
@@ -74,7 +107,7 @@ export default function Sidebar() {
                                     }
                 `}
                             >
-                                <span className="text-xl">{item.icon}</span>
+                                <item.icon className="text-current" />
                                 {!isCollapsed && (
                                     <span className="font-medium">{item.name}</span>
                                 )}
@@ -103,12 +136,24 @@ export default function Sidebar() {
                 </div>
             </aside>
 
-            {/* Mobile Menu Button */}
+            {/* Mobile Menu Button - Floating Action Button */}
             <button
                 onClick={() => setIsCollapsed(!isCollapsed)}
-                className="fixed bottom-4 right-4 lg:hidden z-50 w-14 h-14 bg-green-500 rounded-full shadow-lg flex items-center justify-center text-white text-2xl"
+                className={`
+                    fixed bottom-6 right-6 lg:hidden z-50 
+                    w-14 h-14 rounded-full shadow-lg 
+                    flex items-center justify-center 
+                    transition-all duration-300
+                    ${isCollapsed
+                        ? 'bg-green-500 hover:bg-green-600'
+                        : 'bg-gray-800 hover:bg-gray-700'
+                    }
+                `}
+                aria-label={isCollapsed ? 'Open menu' : 'Close menu'}
             >
-                {isCollapsed ? '☰' : '✕'}
+                <div className="text-white transition-transform duration-300">
+                    {isCollapsed ? <MenuIcon size="md" /> : <CloseIcon size="md" />}
+                </div>
             </button>
         </>
     );

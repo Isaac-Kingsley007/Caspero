@@ -1,5 +1,6 @@
 import StatusBadge from './StatusBadge';
 import ProgressBar from './ProgressBar';
+import Icon from './Icon';
 
 interface EscrowCardProps {
     escrowCode: string;
@@ -91,7 +92,8 @@ export default function EscrowCard({
                 <div className="flex items-center gap-3 text-xs text-gray-400">
                     {hasPassword && (
                         <span className="flex items-center gap-1">
-                            🔒 Password
+                            <Icon name="lock" size="sm" />
+                            Password
                         </span>
                     )}
                     {isCreator && (

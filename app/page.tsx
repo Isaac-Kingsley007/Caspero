@@ -8,6 +8,7 @@ import Button from '@/components/ui/Button';
 import Modal from '@/components/ui/Modal';
 import JoinEscrowForm from '@/components/forms/JoinEscrowForm';
 import EscrowDetails from '@/components/escrow/EscrowDetails';
+import { SearchIcon } from '@/components/ui/Icon';
 
 // Sample data - will be replaced with real data from contract/database
 const sampleEscrows = [
@@ -103,7 +104,7 @@ export default function Home() {
     <div>
       {/* Header */}
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-2">
+        <h1 className="text-3xl font-bold dark:text-gray-100 mb-2">
           Browse Groups
         </h1>
         <p className="text-gray-600 dark:text-gray-400">
@@ -149,7 +150,7 @@ export default function Home() {
         </div>
       ) : (
         <EmptyState
-          icon="🔍"
+          icon={<SearchIcon size="xl" className="text-gray-500" />}
           title="No escrows found"
           description="Try adjusting your filters or check back later for new group escrows."
         />

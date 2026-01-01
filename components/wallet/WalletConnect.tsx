@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Icon from '@/components/ui/Icon';
 
 export default function WalletConnect() {
     const [isConnected, setIsConnected] = useState(false);
@@ -71,7 +72,7 @@ export default function WalletConnect() {
                 </>
             ) : (
                 <>
-                    <span className="mr-2">🔗</span>
+                    <Icon name="link" className="mr-2" size="sm" />
                     Connect Wallet
                 </>
             )}

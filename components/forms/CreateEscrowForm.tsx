@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
+import Icon from '@/components/ui/Icon';
 
 interface CreateEscrowFormProps {
     onSubmit: (data: CreateEscrowData) => void;
@@ -129,8 +130,9 @@ export default function CreateEscrowForm({ onSubmit, onCancel }: CreateEscrowFor
                         onChange={(e) => setUsePassword(e.target.checked)}
                         className="w-4 h-4 rounded border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-green-500 focus:ring-green-500"
                     />
-                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                        🔒 Password protect this escrow
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-2">
+                        <Icon name="lock" size="sm" />
+                        Password protect this escrow
                     </span>
                 </label>
 
