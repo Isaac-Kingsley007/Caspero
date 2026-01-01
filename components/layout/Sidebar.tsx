@@ -79,7 +79,7 @@ export default function Sidebar() {
                         {!isCollapsed && (
                             <Link href="/">
                                 <div>
-                                    <h1 className="text-lg font-bold text-gray-100">GroupEscrow</h1>
+                                    <h1 className="text-lg font-bold text-gray-100">Group-Splits</h1>
                                     <p className="text-xs text-gray-400">Split & Stake</p>
                                 </div>
                             </Link>

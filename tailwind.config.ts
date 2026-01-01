@@ -9,8 +9,9 @@ const config: Config = {
     theme: {
         extend: {
             fontFamily: {
-                sans: ['Montserrat', 'sans-serif'],
-                montserrat: ['Montserrat', 'sans-serif'],
+                sans: ['var(--font-montserrat)', 'sans-serif'],
+                montserrat: ['var(--font-montserrat)', 'sans-serif'],
+                saira: ['var(--font-saira)', 'sans-serif'],
             },
         },
     },

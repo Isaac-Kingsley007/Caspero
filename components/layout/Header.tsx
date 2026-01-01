@@ -3,6 +3,13 @@
 import WalletConnect from '@/components/wallet/WalletConnect';
 import { MenuIcon } from '@/components/ui/Icon';
 import { useSidebar } from '@/components/providers/SidebarProvider';
+import { Saira } from 'next/font/google';
+
+const saira = Saira({
+    subsets: ["latin"],
+    weight: ["100", "200", "300", "400", "500", "600", "700", "800", "900"],
+    display: "swap",
+});
 
 export default function Header() {
     const { isCollapsed, toggleSidebar } = useSidebar();
@@ -10,8 +17,8 @@ export default function Header() {
     return (
         <header className="sticky top-0 z-30 bg-gray-900 border-b border-gray-800">
             <div className="flex items-center justify-between px-4 py-4">
-                {/* Left Side - Mobile Menu Button */}
-                <div className="flex items-center">
+                {/* Left Side - Mobile Menu Button + Website Name */}
+                <div className="flex items-center space-x-4">
                     {isCollapsed && (
                         <button
                             onClick={toggleSidebar}
@@ -21,6 +28,13 @@ export default function Header() {
                             <MenuIcon size="md" />
                         </button>
                     )}
+
+                    {/* Website Name */}
+                    <div className="flex items-center">
+                        <h1 className={`${saira.className} text-2xl md:text-3xl text-gray-100 tracking-wider font-bold`}>
+                            CasperGroup-Splits
+                        </h1>
+                    </div>
                 </div>
 
                 {/* Right Side Actions */}
