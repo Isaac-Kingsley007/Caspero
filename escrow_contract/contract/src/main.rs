@@ -26,7 +26,7 @@ const CONTRIBUTION_DICT: &str = "contributions";
 const ESCROW_COUNTER: &str = "escrow_counter";
 const USER_ESCROWS_DICT: &str = "user_escrows";
 const CONTRACT_PURSE: &str = "contract_purse";
-const PARTICIPANTS_LIST_DICT: &str = "participants_list"; // New: stores Vec<AccountHash> per escrow
+const PARTICIPANTS_LIST_DICT: &str = "participants_list"; // Stores Vec<AccountHash> per escrow
 
 // Liquid staking contract configuration
 const LIQUID_STAKING_CONTRACT: &str = "liquid_staking_contract_hash";
@@ -48,6 +48,7 @@ const ERROR_STAKING_FAILED: u16 = 111;
 const ERROR_BALANCE_QUERY_FAILED: u16 = 112;
 const ERROR_UNSTAKING_FAILED: u16 = 113;
 const ERROR_LIQUID_STAKING_NOT_CONFIGURED: u16 = 114;
+const ERROR_INVALID_PASSWORD: u16 = 115;
 
 // ============================================================================
 // DATA STRUCTURES
@@ -73,6 +74,7 @@ pub struct Escrow {
     pub accumulated_scspr: U512,
     pub initial_scspr: U512,
     pub created_timestamp: u64,
+    pub password_hash: [u8; 32], // SHA256 hash of the password
 }
 
 /// Participant contribution tracking
@@ -215,6 +217,26 @@ fn get_participants_list(escrow_code: &str) -> Vec<AccountHash> {
         .unwrap_or_else(|| Vec::new())
 }
 
+/// Hash a password using SHA256
+fn hash_password(password: &str) -> [u8; 32] {
+    use casper_types::bytesrepr::ToBytes;
+    
+    // Simple hash implementation using Casper's crypto
+    let password_bytes = password.as_bytes();
+    let mut hasher = casper_types::crypto::blake2b(password_bytes);
+    
+    // Convert to fixed 32-byte array
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&hasher[..32]);
+    hash
+}
+
+/// Verify password against stored hash
+fn verify_password(password: &str, stored_hash: &[u8; 32]) -> bool {
+    let input_hash = hash_password(password);
+    input_hash == *stored_hash
+}
+
 /// Serialize escrow to bytes for storage
 fn serialize_escrow(escrow: &Escrow) -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -227,6 +249,7 @@ fn serialize_escrow(escrow: &Escrow) -> Vec<u8> {
     bytes.extend_from_slice(&escrow.accumulated_scspr.to_bytes_le());
     bytes.extend_from_slice(&escrow.initial_scspr.to_bytes_le());
     bytes.extend_from_slice(&escrow.created_timestamp.to_le_bytes());
+    bytes.extend_from_slice(&escrow.password_hash); // Add password hash
     bytes
 }
 
@@ -271,6 +294,13 @@ fn deserialize_escrow(bytes: &[u8]) -> Escrow {
     } else {
         0u64
     };
+    offset += 8;
+    
+    let password_hash = if offset + 32 <= bytes.len() {
+        <[u8; 32]>::try_from(&bytes[offset..offset + 32]).unwrap_or_revert()
+    } else {
+        [0u8; 32] // Backward compatibility for old escrows without password
+    };
     
     Escrow {
         creator,
@@ -282,6 +312,7 @@ fn deserialize_escrow(bytes: &[u8]) -> Escrow {
         accumulated_scspr,
         initial_scspr,
         created_timestamp,
+        password_hash,
     }
 }
 
@@ -329,10 +360,14 @@ pub extern "C" fn create_escrow() {
     let creator: AccountHash = runtime::get_caller();
     let total_amount: U256 = runtime::get_named_arg("total_amount");
     let num_friends: u8 = runtime::get_named_arg("num_friends");
+    let password: String = runtime::get_named_arg("password"); // New: password parameter
     
     if num_friends < 2 {
         runtime::revert(casper_types::ApiError::User(ERROR_MIN_PARTICIPANTS));
     }
+    
+    // Hash the password for secure storage
+    let password_hash = hash_password(&password);
     
     let split_amount = total_amount / U256::from(num_friends);
     
@@ -357,6 +392,7 @@ pub extern "C" fn create_escrow() {
         accumulated_scspr: U512::zero(),
         initial_scspr: U512::zero(),
         created_timestamp: runtime::get_blocktime(),
+        password_hash, // Store password hash
     };
     
     let escrow_dict = get_or_create_dict(ESCROW_DICT);
@@ -372,7 +408,7 @@ pub extern "C" fn create_escrow() {
     // Add to user's escrow list
     add_user_escrow(creator, &escrow_code, true);
     
-    // Emit event
+    // Emit event (frontend/indexer can track all escrows via events)
     emit_escrow_created(&escrow_code, creator, total_amount, num_friends);
     
     runtime::ret(CLValue::from_t(escrow_code).unwrap_or_revert());
@@ -387,6 +423,7 @@ pub extern "C" fn join_escrow() {
     let caller: AccountHash = runtime::get_caller();
     let escrow_code: String = runtime::get_named_arg("escrow_code");
     let amount: U512 = runtime::get_named_arg("amount");
+    let password: String = runtime::get_named_arg("password"); // New: password parameter
     
     let escrow_dict = get_or_create_dict(ESCROW_DICT);
     let escrow_bytes: Vec<u8> = storage::dictionary_get(escrow_dict, &escrow_code)
@@ -394,6 +431,11 @@ pub extern "C" fn join_escrow() {
         .unwrap_or_else(|| runtime::revert(casper_types::ApiError::User(ERROR_ESCROW_NOT_FOUND)));
     
     let mut escrow = deserialize_escrow(&escrow_bytes);
+    
+    // Verify password before allowing join
+    if !verify_password(&password, &escrow.password_hash) {
+        runtime::revert(casper_types::ApiError::User(ERROR_INVALID_PASSWORD));
+    }
     
     if escrow.status != EscrowStatus::Open {
         runtime::revert(casper_types::ApiError::User(ERROR_ESCROW_COMPLETE));
@@ -829,6 +871,7 @@ pub extern "C" fn call() {
         vec![
             Parameter::new("total_amount", CLType::U256),
             Parameter::new("num_friends", CLType::U8),
+            Parameter::new("password", CLType::String), // New: password parameter
         ],
         CLType::String,
         EntryPointAccess::Public,
@@ -840,6 +883,7 @@ pub extern "C" fn call() {
         vec![
             Parameter::new("escrow_code", CLType::String),
             Parameter::new("amount", CLType::U512),
+            Parameter::new("password", CLType::String), // New: password parameter
         ],
         CLType::Unit,
         EntryPointAccess::Public,
