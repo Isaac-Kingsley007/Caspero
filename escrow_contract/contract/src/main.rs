@@ -21,6 +21,7 @@ const CONTRACT_PACKAGE_NAME: &str = "group_escrow_package";
 const CONTRACT_VERSION_KEY: &str = "version";
 const ESCROW_DICT: &str = "escrows";
 const PARTICIPANT_DICT: &str = "participants";
+const CONTRIBUTION_DICT: &str = "contributions";
 const ESCROW_COUNTER: &str = "escrow_counter";
 
 // Liquid staking contract hash (placeholder - replace with actual deployed contract)
@@ -48,6 +49,15 @@ pub struct Escrow {
     pub joined_count: u8,
     pub status: EscrowStatus,
     pub accumulated_scspr: U512, // Total sCSPR locked in escrow
+    pub initial_scspr: U512, // Initial sCSPR when all joined (for yield calculation)
+}
+
+/// Participant contribution tracking
+pub struct ParticipantContribution {
+    pub account: AccountHash,
+    pub cspr_contributed: U512,
+    pub scspr_received: U512,
+    pub withdrawn: bool,
 }
 
 // ============================================================================
@@ -84,6 +94,7 @@ fn serialize_escrow(escrow: &Escrow) -> Vec<u8> {
     bytes.push(escrow.joined_count);
     bytes.push(escrow.status as u8);
     bytes.extend_from_slice(&escrow.accumulated_scspr.to_bytes_le());
+    bytes.extend_from_slice(&escrow.initial_scspr.to_bytes_le());
     bytes
 }
 
@@ -115,7 +126,14 @@ fn deserialize_escrow(bytes: &[u8]) -> Escrow {
     };
     offset += 1;
     
-    let accumulated_scspr = U512::from_little_endian(&bytes[offset..]);
+    let accumulated_scspr = U512::from_little_endian(&bytes[offset..offset + 64]);
+    offset += 64;
+    
+    let initial_scspr = if offset < bytes.len() {
+        U512::from_little_endian(&bytes[offset..])
+    } else {
+        U512::zero() // Backward compatibility
+    };
     
     Escrow {
         creator,
@@ -125,6 +143,42 @@ fn deserialize_escrow(bytes: &[u8]) -> Escrow {
         joined_count,
         status,
         accumulated_scspr,
+        initial_scspr,
+    }
+}
+
+/// Serialize participant contribution to bytes
+fn serialize_contribution(contribution: &ParticipantContribution) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(contribution.account.as_bytes());
+    bytes.extend_from_slice(&contribution.cspr_contributed.to_bytes_le());
+    bytes.extend_from_slice(&contribution.scspr_received.to_bytes_le());
+    bytes.push(if contribution.withdrawn { 1 } else { 0 });
+    bytes
+}
+
+/// Deserialize participant contribution from bytes
+fn deserialize_contribution(bytes: &[u8]) -> ParticipantContribution {
+    let mut offset = 0;
+    
+    let account = AccountHash::new(
+        <[u8; 32]>::try_from(&bytes[offset..offset + 32]).unwrap_or_revert()
+    );
+    offset += 32;
+    
+    let cspr_contributed = U512::from_little_endian(&bytes[offset..offset + 64]);
+    offset += 64;
+    
+    let scspr_received = U512::from_little_endian(&bytes[offset..offset + 64]);
+    offset += 64;
+    
+    let withdrawn = bytes[offset] == 1;
+    
+    ParticipantContribution {
+        account,
+        cspr_contributed,
+        scspr_received,
+        withdrawn,
     }
 }
 
@@ -180,6 +234,7 @@ pub extern "C" fn create_escrow() {
         joined_count: 0, // Creator joins separately via join_escrow
         status: EscrowStatus::Open,
         accumulated_scspr: U512::zero(),
+        initial_scspr: U512::zero(), // Will be set when escrow completes
     };
     
     // Store escrow
@@ -269,19 +324,107 @@ pub extern "C" fn join_escrow() {
     escrow.joined_count += 1;
     escrow.accumulated_scspr += scspr_received;
     
+    // Store participant contribution
+    let contribution = ParticipantContribution {
+        account: caller,
+        cspr_contributed: amount,
+        scspr_received,
+        withdrawn: false,
+    };
+    
+    let contribution_dict = get_or_create_dict(CONTRIBUTION_DICT);
+    let contribution_key = alloc::format!("{}:{}", escrow_code, caller);
+    storage::dictionary_put(contribution_dict, &contribution_key, serialize_contribution(&contribution));
+    
     // Mark participant as joined
     storage::dictionary_put(participant_dict, &participant_key, true);
     
     // Check if all participants have joined
     if escrow.joined_count >= escrow.num_friends {
         escrow.status = EscrowStatus::Complete;
+        escrow.initial_scspr = escrow.accumulated_scspr; // Lock in initial amount for yield calculation
         
-        // Transfer all sCSPR to creator
-        transfer_scspr_to_creator(&escrow);
+        // Note: Participants can now withdraw their proportional share + yield
+        // No automatic transfer to creator anymore
     }
     
     // Save updated escrow
     storage::dictionary_put(escrow_dict, &escrow_code, serialize_escrow(&escrow));
+}
+
+// ============================================================================
+// ENTRY POINT: WITHDRAW
+// ============================================================================
+
+/// Withdraw participant's share of sCSPR + proportional yield
+/// 
+/// # Parameters
+/// - `escrow_code`: Unique code for the escrow (String)
+/// 
+/// # Process
+/// 1. Validates escrow is complete
+/// 2. Validates participant hasn't withdrawn yet
+/// 3. Calculates participant's share + proportional yield
+/// 4. Transfers sCSPR to participant
+/// 5. Marks participant as withdrawn
+#[no_mangle]
+pub extern "C" fn withdraw() {
+    let caller: AccountHash = runtime::get_caller();
+    let escrow_code: String = runtime::get_named_arg("escrow_code");
+    
+    // Load escrow
+    let escrow_dict = get_or_create_dict(ESCROW_DICT);
+    let escrow_bytes: Vec<u8> = storage::dictionary_get(escrow_dict, &escrow_code)
+        .unwrap_or_revert()
+        .unwrap_or_revert();
+    
+    let escrow = deserialize_escrow(&escrow_bytes);
+    
+    // Validate escrow is complete
+    if !matches!(escrow.status, EscrowStatus::Complete) {
+        runtime::revert(casper_types::ApiError::User(104)); // Escrow not complete
+    }
+    
+    // Load participant contribution
+    let contribution_dict = get_or_create_dict(CONTRIBUTION_DICT);
+    let contribution_key = alloc::format!("{}:{}", escrow_code, caller);
+    
+    let contribution_bytes: Option<Vec<u8>> = storage::dictionary_get(contribution_dict, &contribution_key)
+        .unwrap_or_revert();
+    
+    if contribution_bytes.is_none() {
+        runtime::revert(casper_types::ApiError::User(105)); // Participant not found
+    }
+    
+    let mut contribution = deserialize_contribution(&contribution_bytes.unwrap());
+    
+    if contribution.withdrawn {
+        runtime::revert(casper_types::ApiError::User(106)); // Already withdrawn
+    }
+    
+    // Calculate participant's share + yield
+    let current_scspr_balance = get_current_scspr_balance(); // Get current staked balance
+    let total_yield = if current_scspr_balance > escrow.initial_scspr {
+        current_scspr_balance - escrow.initial_scspr
+    } else {
+        U512::zero()
+    };
+    
+    // Calculate proportional share of yield based on contribution
+    let participant_yield = if escrow.initial_scspr > U512::zero() {
+        (total_yield * contribution.scspr_received) / escrow.initial_scspr
+    } else {
+        U512::zero()
+    };
+    
+    let total_withdrawal = contribution.scspr_received + participant_yield;
+    
+    // Transfer sCSPR to participant
+    transfer_scspr_to_participant(caller, total_withdrawal);
+    
+    // Mark as withdrawn
+    contribution.withdrawn = true;
+    storage::dictionary_put(contribution_dict, &contribution_key, serialize_contribution(&contribution));
 }
 
 // ============================================================================
@@ -312,8 +455,30 @@ fn stake_cspr_to_scspr(cspr_amount: U512) -> U512 {
     cspr_amount
 }
 
-/// Transfer accumulated sCSPR to the creator
-fn transfer_scspr_to_creator(escrow: &Escrow) {
+/// Get current sCSPR balance of the contract
+/// This would query the liquid staking contract for current balance
+fn get_current_scspr_balance() -> U512 {
+    // Placeholder: In real implementation, query liquid staking contract
+    // for current sCSPR balance of this contract
+    // 
+    // Example call structure:
+    // let scspr_contract = get_scspr_token_contract_hash();
+    // let balance: U512 = runtime::call_contract(
+    //     scspr_contract,
+    //     "balance_of",
+    //     runtime_args! {
+    //         "account" => runtime::get_account(),
+    //     },
+    // );
+    // return balance;
+    
+    // For hackathon MVP, simulate some yield growth
+    // In reality, this would be the actual staked balance
+    U512::from(1050) // Simulate 5% yield growth
+}
+
+/// Transfer sCSPR to a specific participant
+fn transfer_scspr_to_participant(recipient: AccountHash, amount: U512) {
     // Placeholder: In real implementation, transfer sCSPR tokens
     // 
     // Example call structure:
@@ -322,8 +487,8 @@ fn transfer_scspr_to_creator(escrow: &Escrow) {
     //     scspr_contract,
     //     "transfer",
     //     runtime_args! {
-    //         "recipient" => escrow.creator,
-    //         "amount" => escrow.accumulated_scspr,
+    //         "recipient" => recipient,
+    //         "amount" => amount,
     //     },
     // );
     
@@ -367,6 +532,17 @@ pub extern "C" fn call() {
         vec![
             Parameter::new("escrow_code", CLType::String),
             Parameter::new("amount", CLType::U512),
+        ],
+        CLType::Unit,
+        EntryPointAccess::Public,
+        EntryPointType::Contract,
+    ));
+    
+    // withdraw entry point
+    entry_points.add_entry_point(EntryPoint::new(
+        "withdraw",
+        vec![
+            Parameter::new("escrow_code", CLType::String),
         ],
         CLType::Unit,
         EntryPointAccess::Public,
