@@ -5,7 +5,7 @@
  * client-side aggregation using multiple cheap contract calls.
  */
 
-import { CasperClient, CLPublicKey } from 'casper-js-sdk';
+import { PublicKey } from 'casper-js-sdk';
 
 // Types
 export interface EscrowInfo {
@@ -68,7 +68,8 @@ export async function getUserEscrowsDetailed(
 
     // Step 3: Get details for each escrow (cheap - ~2,000 gas each)
     const detailedEscrows = await Promise.all(
-        escrowEntries.map(async (entry) => {
+        // Explicitly type entry to avoid implicit any error
+        escrowEntries.map(async (entry: { escrow_code: string; is_creator: boolean }) => {
             try {
                 const info = await contractClient.getEscrowInfo(entry.escrow_code);
 
@@ -138,7 +139,8 @@ export async function getAllEscrowsFromEvents(
     eventIndexer: any,
     page: number = 0,
     pageSize: number = 20,
-    statusFilter?: 'Open' | 'Complete' | 'Cancelled'
+    statusFilter?: 'Open' | 'Complete' | 'Cancelled',
+    contractClient?: any
 ): Promise<EscrowInfo[]> {
     // Get escrow codes from event indexer
     const escrowCodes = await eventIndexer.getEscrowCodes({
@@ -146,6 +148,10 @@ export async function getAllEscrowsFromEvents(
         pageSize,
         status: statusFilter
     });
+
+    if (!contractClient) {
+        return [];
+    }
 
     // Get details for each
     const escrows = await Promise.all(
@@ -192,10 +198,11 @@ export async function getEscrowStats(
  */
 export class EscrowEventListener {
     private contractHash: string;
-    private casperClient: CasperClient;
+    // Removed specific CasperClient type until RpcClient is fully set up, to assume implicit any or generic client for now
+    private casperClient: any;
     private listeners: Map<string, Function[]> = new Map();
 
-    constructor(contractHash: string, casperClient: CasperClient) {
+    constructor(contractHash: string, casperClient: any) {
         this.contractHash = contractHash;
         this.casperClient = casperClient;
     }
@@ -320,7 +327,7 @@ export async function canWithdraw(
     userAccount: string
 ): Promise<boolean> {
     try {
-        const status = await contractClient.getParticipantStatus(escrowCode, userAccount);
+        const status = await contractClient.getParticipantParticipantStatus(escrowCode, userAccount);
 
         if (status === 'not_joined') return false;
 

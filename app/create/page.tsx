@@ -1,24 +1,15 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import CreateEscrowForm, { CreateEscrowData } from '@/components/forms/CreateEscrowForm';
+import CreateEscrowForm from '@/components/forms/CreateEscrowForm';
 
 export default function CreateEscrow() {
     const router = useRouter();
 
-    const handleSubmit = async (data: CreateEscrowData) => {
-        console.log('Creating escrow:', data);
+    const handleSubmit = async (escrowCode: string) => {
+        console.log('Escrow created with code:', escrowCode);
 
-        // TODO: Integrate with smart contract
-        // 1. Convert CSPR to motes
-        // 2. Hash password if provided
-        // 3. Call create_escrow contract function
-        // 4. Wait for transaction confirmation
-
-        // Simulate API call
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        alert(`Escrow ${data.escrowCode} created successfully!`);
+        alert(`Escrow ${escrowCode} created successfully!`);
         router.push('/my-escrows');
     };
 

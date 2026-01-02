@@ -1,14 +1,15 @@
 import type { Metadata } from "next";
-import { Atkinson_Hyperlegible_Mono, Saira } from "next/font/google";
+import { Montserrat, Saira } from "next/font/google";
 import "./globals.css";
 import Sidebar from "@/components/layout/Sidebar";
 import Header from "@/components/layout/Header";
 import { SidebarProvider } from "@/components/providers/SidebarProvider";
+import { WalletProvider } from "@/hooks/useWallet";
 
-const montserrat = Atkinson_Hyperlegible_Mono({
+const montserrat = Montserrat({
   subsets: ["latin"],
   variable: "--font-montserrat",
-  weight: ["200", "300", "400", "500", "600", "700", "800"],
+  weight: ["100", "200", "300", "400", "500", "600", "700", "800", "900"],
   display: "swap",
 });
 
@@ -32,23 +33,25 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${montserrat.variable} ${saira.variable}`}>
       <body className={`${montserrat.className} bg-gray-950 text-gray-100`}>
-        <SidebarProvider>
-          <div className="flex h-screen overflow-hidden">
-            {/* Sidebar - Fixed left */}
-            <Sidebar />
+        <WalletProvider>
+          <SidebarProvider>
+            <div className="flex h-screen overflow-hidden">
+              {/* Sidebar - Fixed left */}
+              <Sidebar />
 
-            {/* Main Content Area */}
-            <div className="flex-1 flex flex-col overflow-hidden">
-              {/* Top Header */}
-              <Header />
+              {/* Main Content Area */}
+              <div className="flex-1 flex flex-col overflow-hidden">
+                {/* Top Header */}
+                <Header />
 
-              {/* Page Content - Scrollable */}
-              <main className="flex-1 overflow-y-auto scrollbar-thin p-8 bg-gray-950">
-                {children}
-              </main>
+                {/* Page Content - Scrollable */}
+                <main className="flex-1 overflow-y-auto scrollbar-thin p-8 bg-gray-950">
+                  {children}
+                </main>
+              </div>
             </div>
-          </div>
-        </SidebarProvider>
+          </SidebarProvider>
+        </WalletProvider>
       </body>
     </html>
   );
