@@ -1,7 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { useCsprClick } from '@/hooks/useCsprClick';
+import { EscrowService } from '@/lib/escrow-service';
+import { Escrow } from '@/lib/supabase';
 import EscrowCard from '@/components/ui/EscrowCard';
 import EmptyState from '@/components/ui/EmptyState';
 import Button from '@/components/ui/Button';
@@ -9,56 +12,72 @@ import Modal from '@/components/ui/Modal';
 import EscrowDetails from '@/components/escrow/EscrowDetails';
 import { WalletIcon, AddIcon } from '@/components/ui/Icon';
 
-// Sample data - will be replaced with real data
-const sampleMyEscrows = [
-    {
-        escrowCode: 'MYTRIP',
-        creator: '0x1234567890abcdef1234567890abcdef12345678',
-        totalAmount: '3000000000000',
-        splitAmount: '1000000000000',
-        joinedCount: 3,
-        totalParticipants: 3,
-        status: 'Complete' as const,
-        hasPassword: true,
-        createdAt: Date.now() - 86400000 * 5,
-        isCreator: true
-    },
-    {
-        escrowCode: 'PARTY',
-        creator: '0x1234567890abcdef1234567890abcdef12345678',
-        totalAmount: '1500000000000',
-        splitAmount: '500000000000',
-        joinedCount: 2,
-        totalParticipants: 3,
-        status: 'Open' as const,
-        hasPassword: false,
-        createdAt: Date.now() - 86400000,
-        isCreator: true
-    }
-];
+interface EscrowData {
+    escrowCode: string;
+    creator: string;
+    totalAmount: string;
+    splitAmount: string;
+    joinedCount: number;
+    totalParticipants: number;
+    status: 'Open' | 'Complete' | 'Cancelled';
+    hasPassword: boolean;
+    createdAt: number;
+    isCreator: boolean;
+}
 
-const sampleParticipants = [
-    {
-        address: '0x1234567890abcdef1234567890abcdef12345678',
-        amount: '1000000000000',
-        joinedAt: Date.now() - 86400000,
-        withdrawn: false
-    },
-    {
-        address: '0xabcdef1234567890abcdef1234567890abcdef12',
-        amount: '1000000000000',
-        joinedAt: Date.now() - 43200000,
-        withdrawn: false
-    }
-];
+interface ParticipantData {
+    address: string;
+    amount: string;
+    joinedAt: number;
+    withdrawn: boolean;
+}
 
 export default function MyEscrows() {
     const router = useRouter();
-    const [escrows] = useState(sampleMyEscrows);
+    const { isConnected, activeKey, signTransaction } = useCsprClick();
+    const [escrows, setEscrows] = useState<EscrowData[]>([]);
+    const [loading, setLoading] = useState(true);
     const [filter, setFilter] = useState<'all' | 'created' | 'joined'>('all');
-    const [walletConnected] = useState(true);
-    const [selectedEscrow, setSelectedEscrow] = useState<typeof sampleMyEscrows[0] | null>(null);
+    const [selectedEscrow, setSelectedEscrow] = useState<EscrowData | null>(null);
     const [showDetailsModal, setShowDetailsModal] = useState(false);
+    const [participants, setParticipants] = useState<ParticipantData[]>([]);
+
+    // Load user's escrows
+    useEffect(() => {
+        if (isConnected && activeKey) {
+            loadUserEscrows();
+        }
+    }, [isConnected, activeKey]);
+
+    const loadUserEscrows = async () => {
+        if (!activeKey) return;
+        
+        setLoading(true);
+        try {
+            const userEscrows = await EscrowService.getUserEscrows(activeKey);
+            
+            // Transform Supabase escrow data to component format
+            const transformedEscrows: EscrowData[] = userEscrows.map((escrow: Escrow) => ({
+                escrowCode: escrow.escrow_code,
+                creator: escrow.creator,
+                totalAmount: escrow.total_amount.toString(),
+                splitAmount: escrow.split_amount.toString(),
+                joinedCount: escrow.joined_count,
+                totalParticipants: escrow.num_friends,
+                status: escrow.status,
+                hasPassword: escrow.has_password,
+                createdAt: new Date(escrow.created_at).getTime(),
+                isCreator: escrow.creator === activeKey
+            }));
+
+            setEscrows(transformedEscrows);
+        } catch (error) {
+            console.error('Failed to load user escrows:', error);
+            setEscrows([]);
+        } finally {
+            setLoading(false);
+        }
+    };
 
     const filteredEscrows = escrows.filter(escrow => {
         if (filter === 'created') return escrow.isCreator;
@@ -66,26 +85,87 @@ export default function MyEscrows() {
         return true;
     });
 
-    const handleEscrowClick = (escrow: typeof sampleMyEscrows[0]) => {
+    const handleEscrowClick = async (escrow: EscrowData) => {
         setSelectedEscrow(escrow);
+
+        // Load escrow details with participants
+        try {
+            const escrowDetails = await EscrowService.getEscrowDetails(escrow.escrowCode);
+            
+            if (escrowDetails) {
+                // Transform participants data
+                const transformedParticipants: ParticipantData[] = escrowDetails.participants.map(p => ({
+                    address: p.participant,
+                    amount: p.cspr_contributed.toString(),
+                    joinedAt: new Date(p.joined_at).getTime(),
+                    withdrawn: p.withdrawn
+                }));
+
+                setParticipants(transformedParticipants);
+            } else {
+                setParticipants([]);
+            }
+        } catch (error) {
+            console.error('Failed to load escrow details:', error);
+            setParticipants([]);
+        }
+
         setShowDetailsModal(true);
     };
 
     const handleWithdraw = async () => {
-        console.log('Withdrawing from:', selectedEscrow?.escrowCode);
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        alert('Withdrawal successful!');
-        setShowDetailsModal(false);
+        if (!selectedEscrow || !activeKey || !signTransaction) {
+            alert('Please connect your wallet first');
+            return;
+        }
+
+        try {
+            const result = await EscrowService.withdrawFromEscrow(
+                selectedEscrow.escrowCode,
+                activeKey,
+                signTransaction
+            );
+
+            if (result.success) {
+                alert(`Withdrawal successful! Deploy hash: ${result.deployHash}`);
+                setShowDetailsModal(false);
+                loadUserEscrows(); // Refresh the list
+            } else {
+                alert(`Failed to withdraw: ${result.error}`);
+            }
+        } catch (error) {
+            console.error('Error withdrawing from escrow:', error);
+            alert(`Error withdrawing: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
     };
 
     const handleCancel = async () => {
-        console.log('Cancelling:', selectedEscrow?.escrowCode);
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        alert('Escrow cancelled!');
-        setShowDetailsModal(false);
+        if (!selectedEscrow || !activeKey || !signTransaction) {
+            alert('Please connect your wallet first');
+            return;
+        }
+
+        try {
+            const result = await EscrowService.cancelEscrow(
+                selectedEscrow.escrowCode,
+                activeKey,
+                signTransaction
+            );
+
+            if (result.success) {
+                alert(`Escrow cancelled successfully! Deploy hash: ${result.deployHash}`);
+                setShowDetailsModal(false);
+                loadUserEscrows(); // Refresh the list
+            } else {
+                alert(`Failed to cancel escrow: ${result.error}`);
+            }
+        } catch (error) {
+            console.error('Error cancelling escrow:', error);
+            alert(`Error cancelling escrow: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
     };
 
-    if (!walletConnected) {
+    if (!isConnected) {
         return (
             <div>
                 <div className="mb-8">
@@ -100,8 +180,6 @@ export default function MyEscrows() {
                     icon={<WalletIcon size="xl" className="text-gray-500" />}
                     title="Wallet not connected"
                     description="Connect your wallet to view and manage your escrows."
-                    actionLabel="Connect Wallet"
-                    onAction={() => console.log('Connect wallet')}
                 />
             </div>
         );
@@ -150,25 +228,38 @@ export default function MyEscrows() {
                 </Button>
             </div>
 
-            {/* Escrow Grid */}
-            {filteredEscrows.length > 0 ? (
+            {/* Loading State */}
+            {loading ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {filteredEscrows.map((escrow) => (
-                        <EscrowCard
-                            key={escrow.escrowCode}
-                            {...escrow}
-                            onClick={() => handleEscrowClick(escrow)}
-                        />
+                    {[1, 2, 3].map((i) => (
+                        <div key={i} className="animate-pulse">
+                            <div className="bg-gray-800 rounded-lg h-48"></div>
+                        </div>
                     ))}
                 </div>
             ) : (
-                <EmptyState
-                    icon={<AddIcon size="xl" className="text-gray-500" />}
-                    title="No escrows yet"
-                    description="Create your first group escrow to start pooling funds with friends."
-                    actionLabel="Create Escrow"
-                    onAction={() => router.push('/create')}
-                />
+                <>
+                    {/* Escrow Grid */}
+                    {filteredEscrows.length > 0 ? (
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                            {filteredEscrows.map((escrow) => (
+                                <EscrowCard
+                                    key={escrow.escrowCode}
+                                    {...escrow}
+                                    onClick={() => handleEscrowClick(escrow)}
+                                />
+                            ))}
+                        </div>
+                    ) : (
+                        <EmptyState
+                            icon={<AddIcon size="xl" className="text-gray-500" />}
+                            title="No escrows yet"
+                            description="Create your first group escrow to start pooling funds with friends."
+                            actionLabel="Create Escrow"
+                            onAction={() => router.push('/create')}
+                        />
+                    )}
+                </>
             )}
 
             {/* Escrow Details Modal */}
@@ -185,9 +276,9 @@ export default function MyEscrows() {
                     <EscrowDetails
                         {...selectedEscrow}
                         totalYield="75000000000"
-                        participants={sampleParticipants}
-                        isParticipant={true}
-                        canWithdraw={selectedEscrow.status === 'Complete'}
+                        participants={participants}
+                        isParticipant={participants.some(p => p.address === activeKey)}
+                        canWithdraw={selectedEscrow.status === 'Complete' && participants.some(p => p.address === activeKey && !p.withdrawn)}
                         onWithdraw={selectedEscrow.status === 'Complete' ? handleWithdraw : undefined}
                         onCancel={selectedEscrow.status === 'Open' && selectedEscrow.isCreator ? handleCancel : undefined}
                     />

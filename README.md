@@ -1,122 +1,200 @@
-# Group Expense Escrow with Liquid Staking
+# CasperGroup-Splits
 
-**Dead-simple group escrow where friends pool CSPR for shared expenses — funds automatically stake for yield while waiting, then settle to the organizer.**
+A decentralized group escrow platform built on Casper Network that allows users to pool funds for shared expenses while earning staking rewards.
 
-## 🚀 Overview
+## Features
 
-Managing group expenses is painful. Someone fronts the money, friends promise to pay back "later," and settling up creates awkward conversations and forgotten IOUs.
+- **Group Escrows**: Create and join group escrows with friends
+- **Automatic Staking**: Pooled CSPR is automatically staked to earn yield
+- **Password Protection**: Optional password protection for private groups
+- **Real-time Updates**: Live updates via Supabase integration
+- **Wallet Integration**: Seamless integration with CSPR.click SDK
+- **Transaction History**: Complete history of all escrow activities
 
-This protocol flips the model: **friends contribute upfront, funds earn staking rewards while pooled, and the organizer gets everything (including yield) to handle the expense.**
+## Tech Stack
 
-**Key Innovation**: Instead of idle money sitting in accounts, pooled CSPR automatically stakes to earn rewards, making group expenses profitable for organizers.
+- **Frontend**: Next.js 16, React 19, TypeScript, Tailwind CSS
+- **Blockchain**: Casper Network, Smart Contract in Rust
+- **Wallet**: CSPR.click SDK for multi-wallet support
+- **Database**: Supabase for real-time data
+- **Styling**: Tailwind CSS with custom components
 
-**Think**: Venmo request + Escrow + Liquid Staking = Fair group payments
+## Getting Started
 
-## 💡 Problem
+### Prerequisites
 
-- **Awkward IOUs**: Someone fronts money, friends "owe" them indefinitely
-- **Idle funds**: Money sits in accounts earning nothing while waiting for reimbursement  
-- **Trust issues**: Friends might forget or delay payments
-- **Settlement friction**: Chasing people for money ruins relationships
+- Node.js 18+ and npm
+- A Casper wallet (Casper Wallet, Ledger, etc.)
+- Supabase account
+- Deployed escrow smart contract
 
-## ✅ Solution
+### Installation
 
-A Casper-based escrow where friends contribute **upfront** and organizers get **yield as compensation**:
+1. Clone the repository:
+```bash
+git clone <repository-url>
+cd caspero
+```
 
-1. **Organizer creates escrow** for total expense amount
-2. **Friends contribute their share** in CSPR (equal splits)
-3. **Funds automatically stake** to earn sCSPR rewards
-4. **When everyone joins**, organizer gets all sCSPR to pay the expense
-5. **Yield compensates organizer** for handling the group expense
+2. Install dependencies:
+```bash
+npm install
+```
 
-## 🔁 How It Works
+3. Set up environment variables:
+```bash
+cp .env.example .env.local
+```
 
-### 1️⃣ Create Group Escrow
-Organizer calls `create_escrow` with:
-- **Total amount** needed for expense
-- **Number of participants** (including themselves)
-- Gets back unique **escrow code** to share with friends
+Edit `.env.local` with your configuration:
+```env
+# Casper Network Configuration
+NEXT_PUBLIC_CASPER_NETWORK=testnet
+NEXT_PUBLIC_CONTRACT_HASH=your_contract_hash_here
+NEXT_PUBLIC_CONTRACT_PACKAGE_HASH=your_contract_package_hash_here
 
-### 2️⃣ Friends Join & Contribute  
-Each participant (including organizer) calls `join_escrow` with:
-- **Escrow code** from organizer
-- **Their split amount** in CSPR (total ÷ participants)
-- CSPR automatically stakes to sCSPR liquid staking tokens
+# CSPR.click Configuration
+NEXT_PUBLIC_CSPR_CLICK_APP_ID=your_app_id_here
 
-### 3️⃣ Automatic Settlement
-When all participants have joined:
-- Escrow status changes to **Complete**
-- **All accumulated sCSPR** transfers to organizer
-- Organizer can use sCSPR or unstake to pay the expense
+# Supabase Configuration
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_url_here
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key_here
+```
 
-### 4️⃣ Yield Distribution
-- **Organizer gets all staking rewards** as compensation for organizing
-- **Friends get convenience** of not handling the payment directly
-- **No IOUs or awkward follow-ups** needed
+4. Set up Supabase database:
+   - Create a new Supabase project
+   - Run the SQL schema from `supabase/schema.sql`
+   - Configure Row Level Security policies
 
-## 💰 Example: Dinner for 4 Friends
+5. Deploy the smart contract:
+   - Navigate to `escrow_contract/`
+   - Follow the deployment instructions in the contract directory
+   - Update the contract hash in your environment variables
 
-1. **Alice creates escrow**: $400 dinner, 4 people = $100 each
-2. **Bob joins**: Contributes $100 CSPR → stakes to sCSPR
-3. **Carol joins**: Contributes $100 CSPR → stakes to sCSPR  
-4. **Dave joins**: Contributes $100 CSPR → stakes to sCSPR
-5. **Alice joins**: Contributes her $100 CSPR → stakes to sCSPR
-6. **Escrow completes**: Alice receives ~$400+ worth of sCSPR (including staking rewards)
-7. **Alice pays restaurant**: Uses sCSPR or unstakes to CSPR
+6. Start the development server:
+```bash
+npm run dev
+```
 
-**Result**: Friends paid upfront, Alice got yield for organizing, no awkward IOUs!
+Open [http://localhost:3000](http://localhost:3000) to view the application.
 
-## 🧱 Architecture
+## Smart Contract
 
-### Smart Contracts (Rust)
-- **GroupEscrow Contract**: Handles escrow creation, deposits, staking, and settlement
-- **Liquid Staking Integration**: Automatically stakes CSPR → sCSPR (placeholder in MVP)
+The escrow smart contract is located in `escrow_contract/contract/src/main.rs` and provides:
 
-### Frontend  
-- **Next.js**: React-based UI for creating and joining escrows
-- **Casper Wallet**: For signing transactions
-- **casper-js-sdk**: Blockchain interaction
+- **create_escrow**: Create a new group escrow
+- **join_escrow**: Join an existing escrow
+- **withdraw**: Withdraw funds plus yield when escrow is complete
+- **cancel_escrow**: Cancel an escrow (creator only)
+- **Query functions**: Get escrow info, participant status, user escrows
 
-## 🛠️ Tech Stack
+### Contract Features
 
-| Layer | Technology |
-|-------|------------|
-| Blockchain | Casper Network |
-| Smart Contracts | Rust (casper-contract, casper-types) |
-| Frontend | Next.js, React |
-| Wallet | Casper Wallet (Signer) |
-| SDK | casper-js-sdk |
+- Password protection for escrows
+- Automatic liquid staking integration
+- Yield distribution based on contribution
+- Event emission for indexing
+- Gas-optimized storage using dictionaries
 
-## 🧪 Demo Flow (Hackathon MVP)
+## Architecture
 
-1. **4 friends need to split dinner bill**
-2. **Alice creates escrow** with total amount and participant count
-3. **Each friend joins** with their CSPR contribution
-4. **Funds automatically stake** to earn sCSPR rewards
-5. **When all join**, Alice gets all sCSPR
-6. **Alice pays restaurant** with earned sCSPR
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Frontend      │    │   Smart Contract │    │   Database      │
+│   (Next.js)     │◄──►│   (Rust/Casper)  │◄──►│   (Supabase)    │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+         │                        │                        │
+         ▼                        ▼                        ▼
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   CSPR.click    │    │   Event Indexer  │    │   Real-time     │
+│   (Wallet SDK)  │    │   (Blockchain)   │    │   Subscriptions │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+```
 
-## 🧠 Key Design Principles
+## Key Components
 
-- **Trust-minimized**: Smart contract handles all logic, no central authority
-- **Yield-efficient**: Idle funds always earn staking rewards
-- **Fair compensation**: Organizers get yield for doing the work
-- **Human-friendly**: Solves real-world group payment problems
-- **Automatic**: No manual settlement or vote needed
+### Frontend
+- **Pages**: Browse, Create, My Escrows, History
+- **Components**: EscrowCard, Forms, Modals, UI Components
+- **Hooks**: useCsprClick for wallet integration
+- **Services**: EscrowService for contract interaction
 
-## 🔮 Future Enhancements
+### Smart Contract
+- **Entry Points**: create_escrow, join_escrow, withdraw, cancel_escrow
+- **Query Functions**: get_escrow_info, get_participant_status
+- **Storage**: Dictionary-based for gas optimization
+- **Events**: Comprehensive event emission for indexing
 
-- **Governance mode**: Group voting for disputed expenses
-- **Reimbursement requests**: Submit receipts for approval
-- **Cross-chain deposits**: Accept other tokens
-- **Mobile app**: Native iOS/Android experience
-- **Expense oracles**: Real-world payment automation
-- **NFT participation**: Proof of group membership
+### Database Schema
+- **escrows**: Core escrow data
+- **participants**: Participant contributions and withdrawals
+- **events**: Blockchain event history
+- **user_escrows**: User-escrow relationships
 
-## 🏁 Why This Matters
+## Development
 
-This project turns a daily human problem into a capital-efficient, trustless protocol.
+### Running Tests
+```bash
+# Frontend tests
+npm test
 
-Instead of idle money and awkward settlements, groups earn yield while organizers get fairly compensated for their effort.
+# Smart contract tests
+cd escrow_contract
+make test
+```
 
-**Everyone wins**: Friends get convenience, organizers get yield, relationships stay intact.
+### Building for Production
+```bash
+npm run build
+```
+
+### Linting
+```bash
+npm run lint
+```
+
+## Deployment
+
+### Frontend Deployment
+1. Build the application: `npm run build`
+2. Deploy to your preferred platform (Vercel, Netlify, etc.)
+3. Set environment variables in your deployment platform
+
+### Smart Contract Deployment
+1. Navigate to `escrow_contract/`
+2. Build the contract: `make build-contract`
+3. Deploy using Casper client tools
+4. Update contract hash in environment variables
+
+### Database Setup
+1. Create Supabase project
+2. Run schema from `supabase/schema.sql`
+3. Configure RLS policies
+4. Set up event indexer (optional)
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Support
+
+For support and questions:
+- Create an issue on GitHub
+- Join our Discord community
+- Check the documentation
+
+## Roadmap
+
+- [ ] Mobile app development
+- [ ] Multi-token support
+- [ ] Advanced yield strategies
+- [ ] Governance features
+- [ ] Cross-chain integration

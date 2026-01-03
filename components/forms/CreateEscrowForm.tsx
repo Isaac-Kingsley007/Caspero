@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { useWallet } from '@/hooks/useWallet';
-import { casperClient, cspr2motes } from '@/lib/casper-client';
+import { useCsprClick, parseCSPR } from '@/hooks/useCsprClick';
+import { EscrowService } from '@/lib/escrow-service';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import Icon from '../ui/Icon';
@@ -19,7 +19,7 @@ export interface CreateEscrowData {
 }
 
 export default function CreateEscrowForm({ onSubmit, onCancel }: CreateEscrowFormProps) {
-    const { isConnected, activeKey, signDeploy } = useWallet();
+    const { isConnected, activeKey, signTransaction } = useCsprClick();
     const [formData, setFormData] = useState<CreateEscrowData>({
         totalAmount: '',
         numParticipants: 2,
@@ -28,7 +28,6 @@ export default function CreateEscrowForm({ onSubmit, onCancel }: CreateEscrowFor
     const [usePassword, setUsePassword] = useState(false);
     const [errors, setErrors] = useState<Record<string, string>>({});
     const [loading, setLoading] = useState(false);
-    const [deployHash, setDeployHash] = useState<string | null>(null);
 
     const validate = () => {
         const newErrors: Record<string, string> = {};
@@ -66,42 +65,38 @@ export default function CreateEscrowForm({ onSubmit, onCancel }: CreateEscrowFor
 
         if (!validate()) return;
 
-        if (!activeKey) {
+        if (!activeKey || !signTransaction) {
             setErrors({ wallet: 'Wallet not connected or no active key' });
             return;
         }
 
         setLoading(true);
-        setDeployHash(null);
 
         try {
+            // Generate a unique escrow code
+            const escrowCode = EscrowService.generateEscrowCode();
+            
             // Convert CSPR to motes for the contract
-            const totalAmountMotes = cspr2motes(formData.totalAmount);
+            const totalAmountMotes = parseCSPR(formData.totalAmount);
+            const splitAmountMotes = parseCSPR((Number(formData.totalAmount) / formData.numParticipants).toString());
 
-            // Create escrow on the blockchain
-            const hash = await casperClient.createEscrow(
-                { activeKey, signDeploy },
-                totalAmountMotes,
-                formData.numParticipants,
-                Date.now() + 7 * 24 * 60 * 60 * 1000, // 7 days from now
-                'Group escrow created via Caspero', // default description
-                usePassword ? formData.password! : undefined
+            // Create escrow using the service
+            const result = await EscrowService.createEscrow(
+                {
+                    escrowCode,
+                    totalAmount: totalAmountMotes,
+                    splitAmount: splitAmountMotes,
+                    numFriends: formData.numParticipants,
+                    password: usePassword ? formData.password : undefined
+                },
+                activeKey,
+                signTransaction
             );
 
-            setDeployHash(hash);
-
-            // Wait for the deploy to be processed
-            const result = await casperClient.waitForDeploy(hash);
-
-            // Extract escrow code from the result
-            const escrowCode = result.effect.transforms.find((t: any) =>
-                t.transform.WriteCLValue?.parsed
-            )?.transform.WriteCLValue.parsed;
-
-            if (escrowCode) {
+            if (result.success) {
                 onSubmit(escrowCode);
             } else {
-                throw new Error('Failed to get escrow code from deploy result');
+                throw new Error(result.error || 'Failed to create escrow');
             }
 
         } catch (error) {
@@ -131,11 +126,9 @@ export default function CreateEscrowForm({ onSubmit, onCancel }: CreateEscrowFor
             )}
 
             {/* Deploy Status */}
-            {deployHash && (
+            {loading && (
                 <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
-                    <p className="text-sm text-blue-400 mb-2">Transaction submitted:</p>
-                    <p className="text-xs font-mono text-blue-300 break-all">{deployHash}</p>
-                    <p className="text-xs text-blue-400 mt-1">Waiting for confirmation...</p>
+                    <p className="text-sm text-blue-400">Creating escrow...</p>
                 </div>
             )}
 

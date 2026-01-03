@@ -1,8 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useWallet } from '@/hooks/useWallet';
-import { casperClient } from '@/lib/casper-client';
+import { useCsprClick, formatCSPR } from '@/hooks/useCsprClick';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
 import { InfoIcon } from '@/components/ui/Icon';
@@ -10,7 +9,7 @@ interface JoinEscrowFormProps {
     escrowCode: string;
     splitAmount: string;
     hasPassword: boolean;
-    onSubmit: (deployHash: string) => void;
+    onSubmit: (escrowCode: string, amount: string, password?: string) => void;
     onCancel: () => void;
 }
 
@@ -21,15 +20,10 @@ export default function JoinEscrowForm({
     onSubmit,
     onCancel
 }: JoinEscrowFormProps) {
-    const { isConnected, activeKey, signDeploy } = useWallet();
+    const { isConnected, activeKey } = useCsprClick();
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
-    const [deployHash, setDeployHash] = useState<string | null>(null);
-
-    const formatCSPR = (motes: string) => {
-        return (Number(motes) / 1e9).toFixed(2);
-    };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -51,24 +45,11 @@ export default function JoinEscrowForm({
 
         setLoading(true);
         setError('');
-        setDeployHash(null);
 
         try {
-            // Join escrow on the blockchain
-            const hash = await casperClient.joinEscrow(
-                { activeKey, signDeploy },
-                escrowCode,
-                splitAmount, // splitAmount is already in motes
-                hasPassword ? password : ''
-            );
-
-            setDeployHash(hash);
-
-            // Wait for the deploy to be processed
-            await casperClient.waitForDeploy(hash);
-
-            onSubmit(hash);
-
+            // Call the parent's onSubmit with the form data
+            // The parent will handle the actual transaction
+            await onSubmit(escrowCode, splitAmount, hasPassword ? password : undefined);
         } catch (error) {
             console.error('Failed to join escrow:', error);
             setError(error instanceof Error ? error.message : 'Failed to join escrow. Please try again.');
@@ -87,11 +68,9 @@ export default function JoinEscrowForm({
             )}
 
             {/* Deploy Status */}
-            {deployHash && (
+            {loading && (
                 <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
-                    <p className="text-sm text-blue-400 mb-2">Transaction submitted:</p>
-                    <p className="text-xs font-mono text-blue-300 break-all">{deployHash}</p>
-                    <p className="text-xs text-blue-400 mt-1">Waiting for confirmation...</p>
+                    <p className="text-sm text-blue-400">Processing transaction...</p>
                 </div>
             )}
 

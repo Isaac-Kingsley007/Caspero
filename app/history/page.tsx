@@ -1,9 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useCsprClick } from '@/hooks/useCsprClick';
+import { supabase } from '@/lib/supabase';
 import StatusBadge from '@/components/ui/StatusBadge';
 import EmptyState from '@/components/ui/EmptyState';
 import Icon from '@/components/ui/Icon';
+import { formatCSPR } from '@/hooks/useCsprClick';
 
 interface HistoryItem {
     id: string;
@@ -12,42 +15,83 @@ interface HistoryItem {
     amount: string;
     timestamp: number;
     status: 'Open' | 'Complete' | 'Cancelled';
+    deployHash?: string;
 }
 
-// Sample data
-const sampleHistory: HistoryItem[] = [
-    {
-        id: '1',
-        type: 'withdraw',
-        escrowCode: 'MYTRIP',
-        amount: '1050000000000',
-        timestamp: Date.now() - 86400000,
-        status: 'Complete'
-    },
-    {
-        id: '2',
-        type: 'create',
-        escrowCode: 'PARTY',
-        amount: '1500000000000',
-        timestamp: Date.now() - 86400000 * 2,
-        status: 'Open'
-    },
-    {
-        id: '3',
-        type: 'join',
-        escrowCode: 'TRIP2024',
-        amount: '1000000000000',
-        timestamp: Date.now() - 86400000 * 3,
-        status: 'Open'
-    }
-];
-
 export default function History() {
-    const [history] = useState(sampleHistory);
-    const [walletConnected] = useState(true);
+    const { isConnected, activeKey } = useCsprClick();
+    const [history, setHistory] = useState<HistoryItem[]>([]);
+    const [loading, setLoading] = useState(true);
 
-    const formatCSPR = (motes: string) => {
-        return (Number(motes) / 1e9).toFixed(2);
+    // Load user's transaction history
+    useEffect(() => {
+        if (isConnected && activeKey) {
+            loadHistory();
+        }
+    }, [isConnected, activeKey]);
+
+    const loadHistory = async () => {
+        if (!activeKey) return;
+        
+        setLoading(true);
+        try {
+            // Get events related to this user
+            const { data: events, error } = await supabase
+                .from('events')
+                .select('*')
+                .or(`data->>creator.eq.${activeKey},data->>participant.eq.${activeKey}`)
+                .order('created_at', { ascending: false })
+                .limit(50);
+
+            if (error) {
+                console.error('Error loading history:', error);
+                setHistory([]);
+                return;
+            }
+
+            // Transform events to history items
+            const historyItems: HistoryItem[] = events.map(event => {
+                const eventData = event.data as any;
+                let type: HistoryItem['type'] = 'join';
+                let amount = '0';
+
+                switch (event.event_type) {
+                    case 'EscrowCreated':
+                        type = 'create';
+                        amount = eventData.total_amount || '0';
+                        break;
+                    case 'ParticipantJoined':
+                        type = 'join';
+                        amount = eventData.amount || '0';
+                        break;
+                    case 'WithdrawalMade':
+                        type = 'withdraw';
+                        amount = eventData.amount || '0';
+                        break;
+                    case 'EscrowCancelled':
+                        type = 'cancel';
+                        amount = eventData.total_amount || '0';
+                        break;
+                }
+
+                return {
+                    id: event.id,
+                    type,
+                    escrowCode: event.escrow_code || 'Unknown',
+                    amount,
+                    timestamp: new Date(event.created_at).getTime(),
+                    status: eventData.status || 'Open',
+                    deployHash: event.transaction_hash
+                };
+            });
+
+            setHistory(historyItems);
+        } catch (error) {
+            console.error('Failed to load history:', error);
+            setHistory([]);
+        } finally {
+            setLoading(false);
+        }
     };
 
     const formatDate = (timestamp: number) => {
@@ -80,7 +124,7 @@ export default function History() {
         return icons[type as keyof typeof icons] || 'description';
     };
 
-    if (!walletConnected) {
+    if (!isConnected) {
         return (
             <div>
                 <div className="mb-8">
@@ -111,7 +155,29 @@ export default function History() {
                 </p>
             </div>
 
-            {history.length > 0 ? (
+            {loading ? (
+                <div className="card">
+                    <div className="space-y-4">
+                        {[1, 2, 3].map((i) => (
+                            <div key={i} className="animate-pulse">
+                                <div className="flex items-center justify-between py-4">
+                                    <div className="flex items-center gap-4">
+                                        <div className="w-10 h-10 bg-gray-700 rounded-full"></div>
+                                        <div>
+                                            <div className="h-4 bg-gray-700 rounded w-32 mb-2"></div>
+                                            <div className="h-3 bg-gray-700 rounded w-24"></div>
+                                        </div>
+                                    </div>
+                                    <div className="text-right">
+                                        <div className="h-4 bg-gray-700 rounded w-20 mb-2"></div>
+                                        <div className="h-3 bg-gray-700 rounded w-16"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            ) : history.length > 0 ? (
                 <div className="card">
                     <div className="space-y-4">
                         {history.map((item, index) => (
@@ -128,6 +194,11 @@ export default function History() {
                                             <p className="text-sm text-gray-400">
                                                 {item.escrowCode} • {formatDate(item.timestamp)}
                                             </p>
+                                            {item.deployHash && (
+                                                <p className="text-xs text-gray-500 font-mono">
+                                                    {item.deployHash.slice(0, 16)}...
+                                                </p>
+                                            )}
                                         </div>
                                     </div>
                                     <div className="text-right flex items-center gap-4">

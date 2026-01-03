@@ -4,7 +4,8 @@ import "./globals.css";
 import Sidebar from "@/components/layout/Sidebar";
 import Header from "@/components/layout/Header";
 import { SidebarProvider } from "@/components/providers/SidebarProvider";
-import { WalletProvider } from "@/hooks/useWallet";
+import { CsprClickProvider } from "@/components/providers/CsprClickProvider";
+import { CsprClickProvider as CsprClickHookProvider } from "@/hooks/useCsprClick";
 
 const montserrat = Montserrat({
   subsets: ["latin"],
@@ -32,26 +33,36 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${montserrat.variable} ${saira.variable}`}>
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+          rel="stylesheet"
+        />
+      </head>
       <body className={`${montserrat.className} bg-gray-950 text-gray-100`}>
-        <WalletProvider>
-          <SidebarProvider>
-            <div className="flex h-screen overflow-hidden">
-              {/* Sidebar - Fixed left */}
-              <Sidebar />
+        <CsprClickProvider>
+          <CsprClickHookProvider>
+            <SidebarProvider>
+              <div className="flex h-screen overflow-hidden">
+                {/* Sidebar - Fixed left */}
+                <Sidebar />
 
-              {/* Main Content Area */}
-              <div className="flex-1 flex flex-col overflow-hidden">
-                {/* Top Header */}
-                <Header />
+                {/* Main Content Area */}
+                <div className="flex-1 flex flex-col overflow-hidden">
+                  {/* Top Header */}
+                  <Header />
 
-                {/* Page Content - Scrollable */}
-                <main className="flex-1 overflow-y-auto scrollbar-thin p-8 bg-gray-950">
-                  {children}
-                </main>
+                  {/* Page Content - Scrollable */}
+                  <main className="flex-1 overflow-y-auto scrollbar-thin p-8 bg-gray-950">
+                    {children}
+                  </main>
+                </div>
               </div>
-            </div>
-          </SidebarProvider>
-        </WalletProvider>
+            </SidebarProvider>
+          </CsprClickHookProvider>
+        </CsprClickProvider>
       </body>
     </html>
   );

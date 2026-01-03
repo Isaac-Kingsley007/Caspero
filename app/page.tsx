@@ -2,13 +2,13 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { useWallet } from '@/hooks/useWallet';
-import { casperClient } from '@/lib/casper-client';
+import { useCsprClick } from '@/hooks/useCsprClick';
+import { EscrowService } from '@/lib/escrow-service';
+import { Escrow } from '@/lib/supabase';
 import EscrowCard from '@/components/ui/EscrowCard';
 import EmptyState from '@/components/ui/EmptyState';
 import Button from '@/components/ui/Button';
 import Modal from '@/components/ui/Modal';
-
 import JoinEscrowForm from '@/components/forms/JoinEscrowForm';
 import EscrowDetails from '@/components/escrow/EscrowDetails';
 
@@ -34,7 +34,7 @@ interface ParticipantData {
 
 export default function Home() {
   const router = useRouter();
-  const { isConnected, activeKey } = useWallet();
+  const { isConnected, activeKey, signTransaction } = useCsprClick();
   const [escrows, setEscrows] = useState<EscrowData[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<'all' | 'password' | 'open'>('all');
@@ -51,38 +51,27 @@ export default function Home() {
   const loadEscrows = async () => {
     setLoading(true);
     try {
-      // For now, we'll use mock data since we don't have a global escrow list
-      // In production, this would come from an event indexer or backend service
-      const mockEscrows: EscrowData[] = [
-        {
-          escrowCode: 'ESCROW-1234-ABCD',
-          creator: 'account-hash-creator1234567890abcdef',
-          totalAmount: '1000000000000', // 1000 CSPR
-          splitAmount: '250000000000',   // 250 CSPR
-          joinedCount: 2,
-          totalParticipants: 4,
-          status: 'Open',
-          hasPassword: true,
-          createdAt: Date.now() - 86400000 * 2,
-          isCreator: false
-        },
-        {
-          escrowCode: 'ESCROW-5678-EFGH',
-          creator: 'account-hash-creator5678901234567890',
-          totalAmount: '500000000000',  // 500 CSPR
-          splitAmount: '100000000000',  // 100 CSPR
-          joinedCount: 4,
-          totalParticipants: 5,
-          status: 'Open',
-          hasPassword: false,
-          createdAt: Date.now() - 86400000,
-          isCreator: false
-        }
-      ];
+      const openEscrows = await EscrowService.getOpenEscrows();
+      
+      // Transform Supabase escrow data to component format
+      const transformedEscrows: EscrowData[] = openEscrows.map((escrow: Escrow) => ({
+        escrowCode: escrow.escrow_code,
+        creator: escrow.creator,
+        totalAmount: escrow.total_amount.toString(),
+        splitAmount: escrow.split_amount.toString(),
+        joinedCount: escrow.joined_count,
+        totalParticipants: escrow.num_friends,
+        status: escrow.status,
+        hasPassword: escrow.has_password,
+        createdAt: new Date(escrow.created_at).getTime(),
+        isCreator: activeKey ? escrow.creator === activeKey : false
+      }));
 
-      setEscrows(mockEscrows);
+      setEscrows(transformedEscrows);
     } catch (error) {
       console.error('Failed to load escrows:', error);
+      // Fallback to empty array on error
+      setEscrows([]);
     } finally {
       setLoading(false);
     }
@@ -97,21 +86,23 @@ export default function Home() {
   const handleEscrowClick = async (escrow: EscrowData) => {
     setSelectedEscrow(escrow);
 
-    // Load escrow details from contract
+    // Load escrow details with participants
     try {
-      const escrowInfo = await casperClient.getEscrowInfo(escrow.escrowCode);
+      const escrowDetails = await EscrowService.getEscrowDetails(escrow.escrowCode);
+      
+      if (escrowDetails) {
+        // Transform participants data
+        const transformedParticipants: ParticipantData[] = escrowDetails.participants.map(p => ({
+          address: p.participant,
+          amount: p.cspr_contributed.toString(),
+          joinedAt: new Date(p.joined_at).getTime(),
+          withdrawn: p.withdrawn
+        }));
 
-      // Mock participants for now
-      const mockParticipants: ParticipantData[] = [
-        {
-          address: 'account-hash-participant1234567890',
-          amount: escrow.splitAmount,
-          joinedAt: Date.now() - 86400000,
-          withdrawn: false
-        }
-      ];
-
-      setParticipants(mockParticipants);
+        setParticipants(transformedParticipants);
+      } else {
+        setParticipants([]);
+      }
     } catch (error) {
       console.error('Failed to load escrow details:', error);
       setParticipants([]);
@@ -125,18 +116,35 @@ export default function Home() {
     setShowJoinModal(true);
   };
 
-  const handleJoinSubmit = async (deployHash: string) => {
-    console.log('Join transaction submitted:', deployHash);
+  const handleJoinSubmit = async (escrowCode: string, amount: string, password?: string) => {
+    if (!activeKey || !signTransaction) {
+      alert('Please connect your wallet first');
+      return;
+    }
 
-    // Show success message
-    alert(`Join transaction submitted! Deploy hash: ${deployHash}`);
+    try {
+      const result = await EscrowService.joinEscrow(
+        { escrowCode, amount, password },
+        activeKey,
+        signTransaction
+      );
 
-    // Close modals
-    setShowJoinModal(false);
-    setSelectedEscrow(null);
-
-    // Refresh escrows list
-    loadEscrows();
+      if (result.success) {
+        alert(`Join transaction submitted successfully! Deploy hash: ${result.deployHash}`);
+        
+        // Close modals
+        setShowJoinModal(false);
+        setSelectedEscrow(null);
+        
+        // Refresh escrows list
+        loadEscrows();
+      } else {
+        alert(`Failed to join escrow: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error joining escrow:', error);
+      alert(`Error joining escrow: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   };
 
   return (
@@ -232,7 +240,7 @@ export default function Home() {
             {...selectedEscrow}
             totalYield="50000000000"
             participants={participants}
-            isParticipant={false}
+            isParticipant={participants.some(p => p.address === activeKey)}
             canWithdraw={false}
             onJoin={handleJoinClick}
           />
