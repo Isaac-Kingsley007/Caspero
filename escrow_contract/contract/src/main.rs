@@ -3,978 +3,941 @@
 
 extern crate alloc;
 
-use alloc::{string::String, vec::Vec};
+use alloc::{
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+    format,
+    boxed::Box,
+};
+
 use casper_contract::{
     contract_api::{runtime, storage, system},
     unwrap_or_revert::UnwrapOrRevert,
 };
+
 use casper_types::{
-    account::AccountHash, contracts::NamedKeys, runtime_args, CLType, CLValue, EntryPoint,
-    EntryPointAccess, EntryPointType, EntryPoints, Key, Parameter, RuntimeArgs, URef, U256, U512,
-    ContractHash,
+    CLType, CLValue, U512,
+    EntryPointAccess, EntryPointType, EntryPoints,
+    Parameter,
+    contracts::{EntryPoint, NamedKeys},
+    account::AccountHash,
 };
 
-// ============================================================================
-// CONSTANTS
-// ============================================================================
+/// ================= CONSTANTS =================
 
-const CONTRACT_PACKAGE_NAME: &str = "group_escrow_package";
-const CONTRACT_VERSION_KEY: &str = "version";
-const ESCROW_DICT: &str = "escrows";
-const PARTICIPANT_DICT: &str = "participants";
-const CONTRIBUTION_DICT: &str = "contributions";
-const ESCROW_COUNTER: &str = "escrow_counter";
-const USER_ESCROWS_DICT: &str = "user_escrows";
-const CONTRACT_PURSE: &str = "contract_purse";
-const PARTICIPANTS_LIST_DICT: &str = "participants_list"; // Stores Vec<AccountHash> per escrow
+const CONTRACT_KEY: &str = "group_escrow_contract";
+const CONTRACT_PACKAGE_KEY: &str = "group_escrow_package";
+const CONTRACT_ACCESS_KEY: &str = "group_escrow_access";
+const CONTRACT_VERSION_KEY: &str = "contract_version";
+const CONTRACT_PURSE_KEY: &str = "contract_purse";
 
-// Liquid staking contract configuration
-const LIQUID_STAKING_CONTRACT: &str = "liquid_staking_contract_hash";
-const SCSPR_TOKEN_CONTRACT: &str = "scspr_token_contract_hash";
+const EP_CREATE_ESCROW: &str = "create_escrow";
+const EP_JOIN_ESCROW: &str = "join_escrow";
+const EP_STAKE: &str = "stake";
+const EP_REFUND: &str = "refund";
+const EP_GET_PARTICIPANTS: &str = "get_participants";
+const EP_GET_STAKE: &str = "get_stake";
+const EP_COMPLETE_ESCROW: &str = "complete_escrow";
+const EP_WITHDRAW: &str = "withdraw";
+const EP_GET_LIQUID_BALANCE: &str = "get_liquid_balance";
+const EP_GET_YIELD: &str = "get_yield";
+const EP_DEPOSIT_YIELD: &str = "deposit_yield";
+const EP_GET_ESCROW_BALANCE: &str = "get_escrow_balance";
+const EP_GET_PARTICIPANT_YIELD: &str = "get_participant_yield";
+const EP_GET_CONTRACT_PURSE: &str = "get_contract_purse";
 
-// Error codes with descriptive names
-const ERROR_MIN_PARTICIPANTS: u16 = 100;
-const ERROR_ESCROW_COMPLETE: u16 = 101;
-const ERROR_ALREADY_JOINED: u16 = 102;
-const ERROR_INCORRECT_AMOUNT: u16 = 103;
-const ERROR_ESCROW_NOT_COMPLETE: u16 = 104;
-const ERROR_PARTICIPANT_NOT_FOUND: u16 = 105;
-const ERROR_ALREADY_WITHDRAWN: u16 = 106;
-const ERROR_ESCROW_NOT_FOUND: u16 = 107;
-const ERROR_NOT_CREATOR: u16 = 108;
-const ERROR_CANNOT_CANCEL: u16 = 109;
-const ERROR_TRANSFER_FAILED: u16 = 110;
-const ERROR_STAKING_FAILED: u16 = 111;
-const ERROR_BALANCE_QUERY_FAILED: u16 = 112;
-const ERROR_UNSTAKING_FAILED: u16 = 113;
-const ERROR_LIQUID_STAKING_NOT_CONFIGURED: u16 = 114;
-const ERROR_INVALID_PASSWORD: u16 = 115;
+const ARG_ESCROW_ID: &str = "escrow_id";
+const ARG_AMOUNT: &str = "amount";
+const ARG_PARTICIPANT: &str = "participant";
+const ARG_TARGET_AMOUNT: &str = "target_amount";
+const ARG_PURSE: &str = "purse";
 
-// ============================================================================
-// DATA STRUCTURES
-// ============================================================================
+/// ================= HELPERS =================
 
-/// Status of an escrow
-#[repr(u8)]
-#[derive(Clone, Copy, PartialEq)]
-pub enum EscrowStatus {
-    Open = 0,
-    Complete = 1,
-    Cancelled = 2,
+fn escrow_key(id: u64) -> String {
+    format!("escrow_{}", id)
 }
 
-/// Escrow state stored on-chain
-pub struct Escrow {
-    pub creator: AccountHash,
-    pub total_amount: U256,
-    pub split_amount: U256,
-    pub num_friends: u8,
-    pub joined_count: u8,
-    pub status: EscrowStatus,
-    pub accumulated_scspr: U512,
-    pub initial_scspr: U512,
-    pub created_timestamp: u64,
-    pub password_hash: [u8; 32], // SHA256 hash of the password
+fn escrow_joined_key(id: u64) -> String {
+    format!("escrow_{}_joined", id)
 }
 
-/// Participant contribution tracking
-pub struct ParticipantContribution {
-    pub account: AccountHash,
-    pub cspr_contributed: U512,
-    pub scspr_received: U512,
-    pub withdrawn: bool,
+fn escrow_participants_key(id: u64) -> String {
+    format!("escrow_{}_participants", id)
 }
 
-/// User escrows list entry
-pub struct UserEscrowEntry {
-    pub escrow_code: String,
-    pub is_creator: bool,
+fn escrow_stake_key(id: u64, participant: AccountHash) -> String {
+    format!("escrow_{}_stake_{}", id, participant)
 }
 
-// ============================================================================
-// EVENT EMISSION
-// ============================================================================
-
-/// Emit an event by storing it in a named key
-fn emit_event(event_name: &str, event_data: String) {
-    let event_key = alloc::format!("event_{}_{}", event_name, runtime::get_blocktime());
-    runtime::put_key(&event_key, storage::new_uref(event_data).into());
+fn escrow_total_staked_key(id: u64) -> String {
+    format!("escrow_{}_total_staked", id)
 }
 
-fn emit_escrow_created(escrow_code: &str, creator: AccountHash, total_amount: U256, num_friends: u8) {
-    let event_data = alloc::format!(
-        "{{\"event\":\"EscrowCreated\",\"escrow_code\":\"{}\",\"creator\":\"{:?}\",\"total_amount\":\"{}\",\"num_friends\":{}}}",
-        escrow_code, creator, total_amount, num_friends
-    );
-    emit_event("escrow_created", event_data);
+fn escrow_liquid_balance_key(id: u64, participant: AccountHash) -> String {
+    format!("escrow_{}_liquid_{}", id, participant)
 }
 
-fn emit_participant_joined(escrow_code: &str, participant: AccountHash, amount: U512, joined_count: u8) {
-    let event_data = alloc::format!(
-        "{{\"event\":\"ParticipantJoined\",\"escrow_code\":\"{}\",\"participant\":\"{:?}\",\"amount\":\"{}\",\"joined_count\":{}}}",
-        escrow_code, participant, amount, joined_count
-    );
-    emit_event("participant_joined", event_data);
+fn escrow_total_yield_key(id: u64) -> String {
+    format!("escrow_{}_total_yield", id)
 }
 
-fn emit_escrow_completed(escrow_code: &str, total_scspr: U512) {
-    let event_data = alloc::format!(
-        "{{\"event\":\"EscrowCompleted\",\"escrow_code\":\"{}\",\"total_scspr\":\"{}\"}}",
-        escrow_code, total_scspr
-    );
-    emit_event("escrow_completed", event_data);
+fn escrow_participant_yield_key(id: u64, participant: AccountHash) -> String {
+    format!("escrow_{}_yield_{}", id, participant)
 }
 
-fn emit_withdrawal_made(escrow_code: &str, participant: AccountHash, amount: U512) {
-    let event_data = alloc::format!(
-        "{{\"event\":\"WithdrawalMade\",\"escrow_code\":\"{}\",\"participant\":\"{:?}\",\"amount\":\"{}\"}}",
-        escrow_code, participant, amount
-    );
-    emit_event("withdrawal_made", event_data);
+fn escrow_completed_key(id: u64) -> String {
+    format!("escrow_{}_completed", id)
 }
 
-fn emit_escrow_cancelled(escrow_code: &str, refund_count: u8) {
-    let event_data = alloc::format!(
-        "{{\"event\":\"EscrowCancelled\",\"escrow_code\":\"{}\",\"refund_count\":{}}}",
-        escrow_code, refund_count
-    );
-    emit_event("escrow_cancelled", event_data);
+fn escrow_withdrawn_key(id: u64, participant: AccountHash) -> String {
+    format!("escrow_{}_withdrawn_{}", id, participant)
 }
 
-// ============================================================================
-// STORAGE HELPERS
-// ============================================================================
-
-/// Get or create a dictionary URef
-fn get_or_create_dict(name: &str) -> URef {
-    match runtime::get_key(name) {
-        Some(Key::URef(uref)) => uref,
-        Some(_) => runtime::revert(casper_types::ApiError::UnexpectedKeyVariant),
-        None => storage::new_dictionary(name).unwrap_or_revert(),
-    }
+fn escrow_purse_key(id: u64) -> String {
+    format!("escrow_{}_purse", id)
 }
 
-/// Get or create the contract's purse
-fn get_contract_purse() -> URef {
-    match runtime::get_key(CONTRACT_PURSE) {
-        Some(Key::URef(uref)) => uref,
-        Some(_) => runtime::revert(casper_types::ApiError::UnexpectedKeyVariant),
-        None => {
-            let purse = system::create_purse();
-            runtime::put_key(CONTRACT_PURSE, purse.into());
-            purse
+fn escrow_target_key(id: u64) -> String {
+    format!("escrow_{}_target", id)
+}
+
+fn escrow_yield_purse_key(id: u64) -> String {
+    format!("escrow_{}_yield_purse", id)
+}
+
+fn escrow_event_counter_key(id: u64) -> String {
+    format!("escrow_{}_event_counter", id)
+}
+
+fn emit_event(event_name: &str, escrow_id: u64, data: &str) {
+    let counter_key = escrow_event_counter_key(escrow_id);
+    let counter = match runtime::get_key(&counter_key) {
+        Some(key) => {
+            let uref = key.into_uref().unwrap_or_revert();
+            let current: u64 = storage::read(uref)
+                .unwrap_or_revert()
+                .unwrap_or_revert();
+            storage::write(uref, current + 1);
+            current + 1
         }
-    }
-}
-
-/// Generate unique escrow code from counter
-fn generate_escrow_code(counter: u64, creator: AccountHash) -> String {
-    use alloc::format;
-    let creator_bytes = creator.as_bytes();
-    format!(
-        "ESCROW-{}-{:02X}{:02X}{:02X}{:02X}",
-        counter, creator_bytes[0], creator_bytes[1], creator_bytes[2], creator_bytes[3]
-    )
-}
-
-/// Add escrow to user's list
-fn add_user_escrow(user: AccountHash, escrow_code: &str, is_creator: bool) {
-    let user_escrows_dict = get_or_create_dict(USER_ESCROWS_DICT);
-    let user_key = alloc::format!("{:?}", user);
-    
-    // Get existing list or create new
-    let mut escrow_list: Vec<String> = storage::dictionary_get(user_escrows_dict, &user_key)
-        .unwrap_or_revert()
-        .unwrap_or_else(|| Vec::new());
-    
-    // Add new escrow with creator flag
-    let entry = alloc::format!("{}:{}", escrow_code, if is_creator { "1" } else { "0" });
-    escrow_list.push(entry);
-    
-    storage::dictionary_put(user_escrows_dict, &user_key, escrow_list);
-}
-
-/// Add participant to escrow's participant list
-fn add_participant_to_list(escrow_code: &str, participant: AccountHash) {
-    let participants_list_dict = get_or_create_dict(PARTICIPANTS_LIST_DICT);
-    
-    // Get existing list or create new
-    let mut participants: Vec<AccountHash> = storage::dictionary_get(participants_list_dict, escrow_code)
-        .unwrap_or_revert()
-        .unwrap_or_else(|| Vec::new());
-    
-    participants.push(participant);
-    
-    storage::dictionary_put(participants_list_dict, escrow_code, participants);
-}
-
-/// Get list of participants for an escrow
-fn get_participants_list(escrow_code: &str) -> Vec<AccountHash> {
-    let participants_list_dict = get_or_create_dict(PARTICIPANTS_LIST_DICT);
-    
-    storage::dictionary_get(participants_list_dict, escrow_code)
-        .unwrap_or_revert()
-        .unwrap_or_else(|| Vec::new())
-}
-
-/// Hash a password using SHA256
-fn hash_password(password: &str) -> [u8; 32] {
-    use casper_types::bytesrepr::ToBytes;
-    
-    // Simple hash implementation using Casper's crypto
-    let password_bytes = password.as_bytes();
-    let mut hasher = casper_types::crypto::blake2b(password_bytes);
-    
-    // Convert to fixed 32-byte array
-    let mut hash = [0u8; 32];
-    hash.copy_from_slice(&hasher[..32]);
-    hash
-}
-
-/// Verify password against stored hash
-fn verify_password(password: &str, stored_hash: &[u8; 32]) -> bool {
-    let input_hash = hash_password(password);
-    input_hash == *stored_hash
-}
-
-/// Serialize escrow to bytes for storage
-fn serialize_escrow(escrow: &Escrow) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(escrow.creator.as_bytes());
-    bytes.extend_from_slice(&escrow.total_amount.to_bytes_le());
-    bytes.extend_from_slice(&escrow.split_amount.to_bytes_le());
-    bytes.push(escrow.num_friends);
-    bytes.push(escrow.joined_count);
-    bytes.push(escrow.status as u8);
-    bytes.extend_from_slice(&escrow.accumulated_scspr.to_bytes_le());
-    bytes.extend_from_slice(&escrow.initial_scspr.to_bytes_le());
-    bytes.extend_from_slice(&escrow.created_timestamp.to_le_bytes());
-    bytes.extend_from_slice(&escrow.password_hash); // Add password hash
-    bytes
-}
-
-/// Deserialize escrow from storage bytes
-fn deserialize_escrow(bytes: &[u8]) -> Escrow {
-    let mut offset = 0;
-    
-    let creator = AccountHash::new(
-        <[u8; 32]>::try_from(&bytes[offset..offset + 32]).unwrap_or_revert()
-    );
-    offset += 32;
-    
-    let total_amount = U256::from_little_endian(&bytes[offset..offset + 32]);
-    offset += 32;
-    
-    let split_amount = U256::from_little_endian(&bytes[offset..offset + 32]);
-    offset += 32;
-    
-    let num_friends = bytes[offset];
-    offset += 1;
-    
-    let joined_count = bytes[offset];
-    offset += 1;
-    
-    let status_byte = bytes[offset];
-    let status = match status_byte {
-        0 => EscrowStatus::Open,
-        1 => EscrowStatus::Complete,
-        2 => EscrowStatus::Cancelled,
-        _ => EscrowStatus::Open,
+        None => {
+            let uref = storage::new_uref(1u64);
+            runtime::put_key(&counter_key, uref.into());
+            1u64
+        }
     };
-    offset += 1;
-    
-    let accumulated_scspr = U512::from_little_endian(&bytes[offset..offset + 64]);
-    offset += 64;
-    
-    let initial_scspr = U512::from_little_endian(&bytes[offset..offset + 64]);
-    offset += 64;
-    
-    let created_timestamp = if offset + 8 <= bytes.len() {
-        u64::from_le_bytes(<[u8; 8]>::try_from(&bytes[offset..offset + 8]).unwrap_or_revert())
-    } else {
-        0u64
-    };
-    offset += 8;
-    
-    let password_hash = if offset + 32 <= bytes.len() {
-        <[u8; 32]>::try_from(&bytes[offset..offset + 32]).unwrap_or_revert()
-    } else {
-        [0u8; 32] // Backward compatibility for old escrows without password
-    };
-    
-    Escrow {
-        creator,
-        total_amount,
-        split_amount,
-        num_friends,
-        joined_count,
-        status,
-        accumulated_scspr,
-        initial_scspr,
-        created_timestamp,
-        password_hash,
-    }
+
+    let event_key = format!("event_{}_{}", event_name, counter);
+    let event_uref = storage::new_uref(data.to_string());
+    runtime::put_key(&event_key, event_uref.into());
 }
 
-/// Serialize participant contribution to bytes
-fn serialize_contribution(contribution: &ParticipantContribution) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(contribution.account.as_bytes());
-    bytes.extend_from_slice(&contribution.cspr_contributed.to_bytes_le());
-    bytes.extend_from_slice(&contribution.scspr_received.to_bytes_le());
-    bytes.push(if contribution.withdrawn { 1 } else { 0 });
-    bytes
+fn get_main_purse() -> casper_types::URef {
+    let key = runtime::get_key(CONTRACT_PURSE_KEY).unwrap_or_revert();
+    key.into_uref().unwrap_or_revert()
 }
 
-/// Deserialize participant contribution from bytes
-fn deserialize_contribution(bytes: &[u8]) -> ParticipantContribution {
-    let mut offset = 0;
-    
-    let account = AccountHash::new(
-        <[u8; 32]>::try_from(&bytes[offset..offset + 32]).unwrap_or_revert()
-    );
-    offset += 32;
-    
-    let cspr_contributed = U512::from_little_endian(&bytes[offset..offset + 64]);
-    offset += 64;
-    
-    let scspr_received = U512::from_little_endian(&bytes[offset..offset + 64]);
-    offset += 64;
-    
-    let withdrawn = bytes[offset] == 1;
-    
-    ParticipantContribution {
-        account,
-        cspr_contributed,
-        scspr_received,
-        withdrawn,
-    }
-}
-
-// ============================================================================
-// ENTRY POINT: CREATE_ESCROW
-// ============================================================================
+/// ================= ENTRY POINTS =================
 
 #[no_mangle]
 pub extern "C" fn create_escrow() {
-    let creator: AccountHash = runtime::get_caller();
-    let total_amount: U256 = runtime::get_named_arg("total_amount");
-    let num_friends: u8 = runtime::get_named_arg("num_friends");
-    let password: String = runtime::get_named_arg("password"); // New: password parameter
-    
-    if num_friends < 2 {
-        runtime::revert(casper_types::ApiError::User(ERROR_MIN_PARTICIPANTS));
-    }
-    
-    // Hash the password for secure storage
-    let password_hash = hash_password(&password);
-    
-    let split_amount = total_amount / U256::from(num_friends);
-    
-    let counter: u64 = match runtime::get_key(ESCROW_COUNTER) {
-        Some(key) => {
-            let uref = key.into_uref().unwrap_or_revert();
-            storage::read(uref).unwrap_or_revert().unwrap_or(0u64)
-        }
-        None => 0u64,
-    };
-    
-    let new_counter = counter + 1;
-    let escrow_code = generate_escrow_code(new_counter, creator);
-    
-    let escrow = Escrow {
-        creator,
-        total_amount,
-        split_amount,
-        num_friends,
-        joined_count: 0,
-        status: EscrowStatus::Open,
-        accumulated_scspr: U512::zero(),
-        initial_scspr: U512::zero(),
-        created_timestamp: runtime::get_blocktime(),
-        password_hash, // Store password hash
-    };
-    
-    let escrow_dict = get_or_create_dict(ESCROW_DICT);
-    storage::dictionary_put(escrow_dict, &escrow_code, serialize_escrow(&escrow));
-    
-    let counter_uref = match runtime::get_key(ESCROW_COUNTER) {
-        Some(key) => key.into_uref().unwrap_or_revert(),
-        None => storage::new_uref(new_counter).into(),
-    };
-    storage::write(counter_uref, new_counter);
-    runtime::put_key(ESCROW_COUNTER, counter_uref.into());
-    
-    // Add to user's escrow list
-    add_user_escrow(creator, &escrow_code, true);
-    
-    // Emit event (frontend/indexer can track all escrows via events)
-    emit_escrow_created(&escrow_code, creator, total_amount, num_friends);
-    
-    runtime::ret(CLValue::from_t(escrow_code).unwrap_or_revert());
-}
+    let escrow_id: u64 = runtime::get_named_arg(ARG_ESCROW_ID);
+    let amount: u64 = runtime::get_named_arg(ARG_AMOUNT);
+    let target_amount: u64 = runtime::get_named_arg(ARG_TARGET_AMOUNT);
 
-// ============================================================================
-// ENTRY POINT: JOIN_ESCROW
-// ============================================================================
+    let key = escrow_key(escrow_id);
+    let amount_uref = storage::new_uref(amount);
+    runtime::put_key(&key, amount_uref.into());
+
+    let target_key = escrow_target_key(escrow_id);
+    let target_uref = storage::new_uref(target_amount);
+    runtime::put_key(&target_key, target_uref.into());
+
+    let joined_key = escrow_joined_key(escrow_id);
+    let joined_uref = storage::new_uref(false);
+    runtime::put_key(&joined_key, joined_uref.into());
+
+    let participants_key = escrow_participants_key(escrow_id);
+    let participants: Vec<AccountHash> = vec![];
+    let participants_uref = storage::new_uref(participants);
+    runtime::put_key(&participants_key, participants_uref.into());
+
+    let total_staked_key = escrow_total_staked_key(escrow_id);
+    let total_staked_uref = storage::new_uref(0u64);
+    runtime::put_key(&total_staked_key, total_staked_uref.into());
+
+    let total_yield_key = escrow_total_yield_key(escrow_id);
+    let total_yield_uref = storage::new_uref(0u64);
+    runtime::put_key(&total_yield_key, total_yield_uref.into());
+
+    let completed_key = escrow_completed_key(escrow_id);
+    let completed_uref = storage::new_uref(false);
+    runtime::put_key(&completed_key, completed_uref.into());
+
+    let escrow_purse = system::create_purse();
+    let escrow_purse_key = escrow_purse_key(escrow_id);
+    runtime::put_key(&escrow_purse_key, escrow_purse.into());
+
+    let yield_purse = system::create_purse();
+    let yield_purse_key = escrow_yield_purse_key(escrow_id);
+    runtime::put_key(&yield_purse_key, yield_purse.into());
+
+    emit_event("escrow_created", escrow_id, &format!("amount:{},target:{}", amount, target_amount));
+
+    runtime::ret(
+        CLValue::from_t(format!("Escrow {} created with target {}", escrow_id, target_amount))
+            .unwrap_or_revert(),
+    );
+}
 
 #[no_mangle]
 pub extern "C" fn join_escrow() {
-    let caller: AccountHash = runtime::get_caller();
-    let escrow_code: String = runtime::get_named_arg("escrow_code");
-    let amount: U512 = runtime::get_named_arg("amount");
-    let password: String = runtime::get_named_arg("password"); // New: password parameter
-    
-    let escrow_dict = get_or_create_dict(ESCROW_DICT);
-    let escrow_bytes: Vec<u8> = storage::dictionary_get(escrow_dict, &escrow_code)
-        .unwrap_or_revert()
-        .unwrap_or_else(|| runtime::revert(casper_types::ApiError::User(ERROR_ESCROW_NOT_FOUND)));
-    
-    let mut escrow = deserialize_escrow(&escrow_bytes);
-    
-    // Verify password before allowing join
-    if !verify_password(&password, &escrow.password_hash) {
-        runtime::revert(casper_types::ApiError::User(ERROR_INVALID_PASSWORD));
+    let escrow_id: u64 = runtime::get_named_arg(ARG_ESCROW_ID);
+
+    let joined_key = escrow_joined_key(escrow_id);
+
+    match runtime::get_key(&joined_key) {
+        Some(key) => {
+            let uref = key.into_uref().unwrap_or_revert();
+            storage::write(uref, true);
+        }
+        None => {
+            let uref = storage::new_uref(true);
+            runtime::put_key(&joined_key, uref.into());
+        }
     }
-    
-    if escrow.status != EscrowStatus::Open {
-        runtime::revert(casper_types::ApiError::User(ERROR_ESCROW_COMPLETE));
+
+    let caller = runtime::get_caller();
+
+    let participants_key = escrow_participants_key(escrow_id);
+    match runtime::get_key(&participants_key) {
+        Some(key) => {
+            let participants_uref = key.into_uref().unwrap_or_revert();
+            let mut participants: Vec<AccountHash> = storage::read(participants_uref)
+                .unwrap_or_revert()
+                .unwrap_or_revert();
+
+            if !participants.contains(&caller) {
+                participants.push(caller);
+                storage::write(participants_uref, participants);
+
+                let liquid_balance_key = escrow_liquid_balance_key(escrow_id, caller);
+                let liquid_balance_uref = storage::new_uref(0u64);
+                runtime::put_key(&liquid_balance_key, liquid_balance_uref.into());
+
+                emit_event("liquid_staking_enabled", escrow_id, &format!("participant:{}", caller));
+            }
+        }
+        None => {}
     }
-    
-    let participant_dict = get_or_create_dict(PARTICIPANT_DICT);
-    let participant_key = alloc::format!("{}:{}", escrow_code, caller);
-    
-    let already_joined: Option<bool> = storage::dictionary_get(participant_dict, &participant_key)
-        .unwrap_or_revert();
-    
-    if already_joined.is_some() {
-        runtime::revert(casper_types::ApiError::User(ERROR_ALREADY_JOINED));
-    }
-    
-    let split_u512 = U512::from_dec_str(&escrow.split_amount.to_string()).unwrap_or_revert();
-    if amount != split_u512 {
-        runtime::revert(casper_types::ApiError::User(ERROR_INCORRECT_AMOUNT));
-    }
-    
-    // Transfer CSPR from caller to contract purse
-    let contract_purse = get_contract_purse();
-    system::transfer_from_purse_to_purse(
-        system::get_main_purse(),
-        contract_purse,
-        amount,
-        None,
-    )
-    .unwrap_or_else(|_| runtime::revert(casper_types::ApiError::User(ERROR_TRANSFER_FAILED)));
-    
-    // Stake CSPR → sCSPR
-    let scspr_received = stake_cspr_to_scspr(amount);
-    
-    escrow.joined_count += 1;
-    escrow.accumulated_scspr += scspr_received;
-    
-    let contribution = ParticipantContribution {
-        account: caller,
-        cspr_contributed: amount,
-        scspr_received,
-        withdrawn: false,
-    };
-    
-    let contribution_dict = get_or_create_dict(CONTRIBUTION_DICT);
-    let contribution_key = alloc::format!("{}:{}", escrow_code, caller);
-    storage::dictionary_put(contribution_dict, &contribution_key, serialize_contribution(&contribution));
-    
-    storage::dictionary_put(participant_dict, &participant_key, true);
-    
-    // Add to user's escrow list
-    add_user_escrow(caller, &escrow_code, false);
-    
-    // Add to escrow's participant list for refunds/iteration
-    add_participant_to_list(&escrow_code, caller);
-    
-    // Emit event
-    emit_participant_joined(&escrow_code, caller, amount, escrow.joined_count);
-    
-    if escrow.joined_count >= escrow.num_friends {
-        escrow.status = EscrowStatus::Complete;
-        escrow.initial_scspr = escrow.accumulated_scspr;
-        
-        emit_escrow_completed(&escrow_code, escrow.accumulated_scspr);
-    }
-    
-    storage::dictionary_put(escrow_dict, &escrow_code, serialize_escrow(&escrow));
+
+    emit_event("escrow_joined", escrow_id, &format!("participant:{}", caller));
 }
 
-// ============================================================================
-// ENTRY POINT: WITHDRAW
-// ============================================================================
+#[no_mangle]
+pub extern "C" fn stake() {
+    let escrow_id: u64 = runtime::get_named_arg(ARG_ESCROW_ID);
+    let amount: u64 = runtime::get_named_arg(ARG_AMOUNT);
+    let participant: AccountHash = runtime::get_named_arg(ARG_PARTICIPANT);
+
+    let completed_key = escrow_completed_key(escrow_id);
+    let completed_storage_key = runtime::get_key(&completed_key).unwrap_or_revert();
+    let completed_uref = completed_storage_key.into_uref().unwrap_or_revert();
+    let is_completed: bool = storage::read(completed_uref)
+        .unwrap_or_revert()
+        .unwrap_or_revert();
+
+    if is_completed {
+        runtime::revert(casper_types::ApiError::User(103));
+    }
+
+    let source_purse = runtime::get_named_arg::<casper_types::URef>(ARG_PURSE);
+    
+    let escrow_purse_key = escrow_purse_key(escrow_id);
+    let escrow_purse_storage_key = runtime::get_key(&escrow_purse_key).unwrap_or_revert();
+    let escrow_purse = escrow_purse_storage_key.into_uref().unwrap_or_revert();
+
+    system::transfer_from_purse_to_purse(
+        source_purse,
+        escrow_purse,
+        U512::from(amount),
+        None
+    ).unwrap_or_revert();
+
+    let participants_key = escrow_participants_key(escrow_id);
+    let participants_storage_key = runtime::get_key(&participants_key).unwrap_or_revert();
+    let participants_uref = participants_storage_key.into_uref().unwrap_or_revert();
+    let mut participants: Vec<AccountHash> = storage::read(participants_uref)
+        .unwrap_or_revert()
+        .unwrap_or_revert();
+
+    if !participants.contains(&participant) {
+        participants.push(participant);
+        storage::write(participants_uref, participants);
+    }
+
+    let stake_key = escrow_stake_key(escrow_id, participant);
+    match runtime::get_key(&stake_key) {
+        Some(key) => {
+            let uref = key.into_uref().unwrap_or_revert();
+            let current_stake: u64 = storage::read(uref)
+                .unwrap_or_revert()
+                .unwrap_or_revert();
+            storage::write(uref, current_stake + amount);
+        }
+        None => {
+            let uref = storage::new_uref(amount);
+            runtime::put_key(&stake_key, uref.into());
+        }
+    }
+
+    let liquid_balance_key = escrow_liquid_balance_key(escrow_id, participant);
+    match runtime::get_key(&liquid_balance_key) {
+        Some(key) => {
+            let uref = key.into_uref().unwrap_or_revert();
+            let current_liquid: u64 = storage::read(uref)
+                .unwrap_or_revert()
+                .unwrap_or_revert();
+            storage::write(uref, current_liquid + amount);
+        }
+        None => {
+            let uref = storage::new_uref(amount);
+            runtime::put_key(&liquid_balance_key, uref.into());
+        }
+    }
+
+    let total_staked_key = escrow_total_staked_key(escrow_id);
+    let total_staked_storage_key = runtime::get_key(&total_staked_key).unwrap_or_revert();
+    let total_staked_uref = total_staked_storage_key.into_uref().unwrap_or_revert();
+    let current_total: u64 = storage::read(total_staked_uref)
+        .unwrap_or_revert()
+        .unwrap_or_revert();
+    storage::write(total_staked_uref, current_total + amount);
+
+    emit_event("staked", escrow_id, &format!("participant:{},amount:{},liquid_issued:{}", participant, amount, amount));
+
+    runtime::ret(
+        CLValue::from_t(format!("Staked {} to escrow {} with liquid tokens", amount, escrow_id))
+            .unwrap_or_revert(),
+    );
+}
+
+#[no_mangle]
+pub extern "C" fn refund() {
+    let escrow_id: u64 = runtime::get_named_arg(ARG_ESCROW_ID);
+    let participant: AccountHash = runtime::get_named_arg(ARG_PARTICIPANT);
+
+    let completed_key = escrow_completed_key(escrow_id);
+    let completed_storage_key = runtime::get_key(&completed_key).unwrap_or_revert();
+    let completed_uref = completed_storage_key.into_uref().unwrap_or_revert();
+    let is_completed: bool = storage::read(completed_uref)
+        .unwrap_or_revert()
+        .unwrap_or_revert();
+
+    if is_completed {
+        runtime::revert(casper_types::ApiError::User(100));
+    }
+
+    let stake_key = escrow_stake_key(escrow_id, participant);
+    let stake_storage_key = runtime::get_key(&stake_key).unwrap_or_revert();
+    let stake_uref = stake_storage_key.into_uref().unwrap_or_revert();
+    let staked_amount: u64 = storage::read(stake_uref)
+        .unwrap_or_revert()
+        .unwrap_or_revert();
+
+    if staked_amount == 0 {
+        runtime::revert(casper_types::ApiError::User(104));
+    }
+
+    let escrow_purse_key = escrow_purse_key(escrow_id);
+    let escrow_purse_storage_key = runtime::get_key(&escrow_purse_key).unwrap_or_revert();
+    let escrow_purse = escrow_purse_storage_key.into_uref().unwrap_or_revert();
+
+    let target_purse = runtime::get_named_arg::<casper_types::URef>(ARG_PURSE);
+
+    system::transfer_from_purse_to_purse(
+        escrow_purse,
+        target_purse,
+        U512::from(staked_amount),
+        None
+    ).unwrap_or_revert();
+
+    storage::write(stake_uref, 0u64);
+
+    let liquid_balance_key = escrow_liquid_balance_key(escrow_id, participant);
+    match runtime::get_key(&liquid_balance_key) {
+        Some(key) => {
+            let uref = key.into_uref().unwrap_or_revert();
+            let current_liquid: u64 = storage::read(uref)
+                .unwrap_or_revert()
+                .unwrap_or_revert();
+            if current_liquid >= staked_amount {
+                storage::write(uref, current_liquid - staked_amount);
+            } else {
+                storage::write(uref, 0u64);
+            }
+        }
+        None => {}
+    }
+
+    let total_staked_key = escrow_total_staked_key(escrow_id);
+    let total_staked_storage_key = runtime::get_key(&total_staked_key).unwrap_or_revert();
+    let total_staked_uref = total_staked_storage_key.into_uref().unwrap_or_revert();
+    let current_total: u64 = storage::read(total_staked_uref)
+        .unwrap_or_revert()
+        .unwrap_or_revert();
+    storage::write(total_staked_uref, current_total - staked_amount);
+
+    emit_event("refunded", escrow_id, &format!("participant:{},amount:{}", participant, staked_amount));
+
+    runtime::ret(
+        CLValue::from_t(format!("Refunded {} from escrow {}", staked_amount, escrow_id))
+            .unwrap_or_revert(),
+    );
+}
+
+#[no_mangle]
+pub extern "C" fn deposit_yield() {
+    let escrow_id: u64 = runtime::get_named_arg(ARG_ESCROW_ID);
+    let amount: u64 = runtime::get_named_arg(ARG_AMOUNT);
+
+    let source_purse = runtime::get_named_arg::<casper_types::URef>(ARG_PURSE);
+
+    let yield_purse_key = escrow_yield_purse_key(escrow_id);
+    let yield_purse_storage_key = runtime::get_key(&yield_purse_key).unwrap_or_revert();
+    let yield_purse = yield_purse_storage_key.into_uref().unwrap_or_revert();
+
+    system::transfer_from_purse_to_purse(
+        source_purse,
+        yield_purse,
+        U512::from(amount),
+        None
+    ).unwrap_or_revert();
+
+    let total_yield_key = escrow_total_yield_key(escrow_id);
+    let total_yield_storage_key = runtime::get_key(&total_yield_key).unwrap_or_revert();
+    let total_yield_uref = total_yield_storage_key.into_uref().unwrap_or_revert();
+    let current_yield: u64 = storage::read(total_yield_uref)
+        .unwrap_or_revert()
+        .unwrap_or_revert();
+    storage::write(total_yield_uref, current_yield + amount);
+
+    emit_event("yield_deposited", escrow_id, &format!("amount:{}", amount));
+
+    runtime::ret(
+        CLValue::from_t(format!("Deposited {} yield to escrow {}", amount, escrow_id))
+            .unwrap_or_revert(),
+    );
+}
+
+#[no_mangle]
+pub extern "C" fn complete_escrow() {
+    let escrow_id: u64 = runtime::get_named_arg(ARG_ESCROW_ID);
+
+    let total_staked_key = escrow_total_staked_key(escrow_id);
+    let total_staked_storage_key = runtime::get_key(&total_staked_key).unwrap_or_revert();
+    let total_staked_uref = total_staked_storage_key.into_uref().unwrap_or_revert();
+    let total_staked: u64 = storage::read(total_staked_uref)
+        .unwrap_or_revert()
+        .unwrap_or_revert();
+
+    let target_key = escrow_target_key(escrow_id);
+    let target_storage_key = runtime::get_key(&target_key).unwrap_or_revert();
+    let target_uref = target_storage_key.into_uref().unwrap_or_revert();
+    let target_amount: u64 = storage::read(target_uref)
+        .unwrap_or_revert()
+        .unwrap_or_revert();
+
+    if total_staked < target_amount {
+        runtime::revert(casper_types::ApiError::User(105));
+    }
+
+    let completed_key = escrow_completed_key(escrow_id);
+    let completed_storage_key = runtime::get_key(&completed_key).unwrap_or_revert();
+    let completed_uref = completed_storage_key.into_uref().unwrap_or_revert();
+    storage::write(completed_uref, true);
+
+    let total_yield_key = escrow_total_yield_key(escrow_id);
+    let total_yield_storage_key = runtime::get_key(&total_yield_key).unwrap_or_revert();
+    let total_yield_uref = total_yield_storage_key.into_uref().unwrap_or_revert();
+    let total_yield: u64 = storage::read(total_yield_uref)
+        .unwrap_or_revert()
+        .unwrap_or_revert();
+
+    emit_event("escrow_completed", escrow_id, &format!("total_staked:{},total_yield:{}", total_staked, total_yield));
+
+    runtime::ret(
+        CLValue::from_t(format!("Escrow {} completed with {} staked and {} yield", escrow_id, total_staked, total_yield))
+            .unwrap_or_revert(),
+    );
+}
 
 #[no_mangle]
 pub extern "C" fn withdraw() {
-    let caller: AccountHash = runtime::get_caller();
-    let escrow_code: String = runtime::get_named_arg("escrow_code");
-    
-    let escrow_dict = get_or_create_dict(ESCROW_DICT);
-    let escrow_bytes: Vec<u8> = storage::dictionary_get(escrow_dict, &escrow_code)
+    let escrow_id: u64 = runtime::get_named_arg(ARG_ESCROW_ID);
+    let participant: AccountHash = runtime::get_named_arg(ARG_PARTICIPANT);
+
+    let completed_key = escrow_completed_key(escrow_id);
+    let completed_storage_key = runtime::get_key(&completed_key).unwrap_or_revert();
+    let completed_uref = completed_storage_key.into_uref().unwrap_or_revert();
+    let is_completed: bool = storage::read(completed_uref)
         .unwrap_or_revert()
-        .unwrap_or_else(|| runtime::revert(casper_types::ApiError::User(ERROR_ESCROW_NOT_FOUND)));
-    
-    let escrow = deserialize_escrow(&escrow_bytes);
-    
-    if escrow.status != EscrowStatus::Complete {
-        runtime::revert(casper_types::ApiError::User(ERROR_ESCROW_NOT_COMPLETE));
-    }
-    
-    let contribution_dict = get_or_create_dict(CONTRIBUTION_DICT);
-    let contribution_key = alloc::format!("{}:{}", escrow_code, caller);
-    
-    let contribution_bytes: Option<Vec<u8>> = storage::dictionary_get(contribution_dict, &contribution_key)
         .unwrap_or_revert();
-    
-    if contribution_bytes.is_none() {
-        runtime::revert(casper_types::ApiError::User(ERROR_PARTICIPANT_NOT_FOUND));
+
+    if !is_completed {
+        runtime::revert(casper_types::ApiError::User(101));
     }
-    
-    let mut contribution = deserialize_contribution(&contribution_bytes.unwrap());
-    
-    if contribution.withdrawn {
-        runtime::revert(casper_types::ApiError::User(ERROR_ALREADY_WITHDRAWN));
+
+    let withdrawn_key = escrow_withdrawn_key(escrow_id, participant);
+    match runtime::get_key(&withdrawn_key) {
+        Some(key) => {
+            let uref = key.into_uref().unwrap_or_revert();
+            let already_withdrawn: bool = storage::read(uref)
+                .unwrap_or_revert()
+                .unwrap_or_revert();
+            if already_withdrawn {
+                runtime::revert(casper_types::ApiError::User(102));
+            }
+        }
+        None => {}
     }
-    
-    let current_scspr_balance = get_current_scspr_balance();
-    let total_yield = if current_scspr_balance > escrow.initial_scspr {
-        current_scspr_balance - escrow.initial_scspr
+
+    let stake_key = escrow_stake_key(escrow_id, participant);
+    let stake_storage_key = runtime::get_key(&stake_key).unwrap_or_revert();
+    let stake_uref = stake_storage_key.into_uref().unwrap_or_revert();
+    let staked_amount: u64 = storage::read(stake_uref)
+        .unwrap_or_revert()
+        .unwrap_or_revert();
+
+    if staked_amount == 0 {
+        runtime::revert(casper_types::ApiError::User(106));
+    }
+
+    let total_staked_key = escrow_total_staked_key(escrow_id);
+    let total_staked_storage_key = runtime::get_key(&total_staked_key).unwrap_or_revert();
+    let total_staked_uref = total_staked_storage_key.into_uref().unwrap_or_revert();
+    let total_staked: u64 = storage::read(total_staked_uref)
+        .unwrap_or_revert()
+        .unwrap_or_revert();
+
+    let total_yield_key = escrow_total_yield_key(escrow_id);
+    let total_yield_storage_key = runtime::get_key(&total_yield_key).unwrap_or_revert();
+    let total_yield_uref = total_yield_storage_key.into_uref().unwrap_or_revert();
+    let total_yield: u64 = storage::read(total_yield_uref)
+        .unwrap_or_revert()
+        .unwrap_or_revert();
+
+    let participant_yield = if total_staked > 0 {
+        (staked_amount * total_yield) / total_staked
     } else {
-        U512::zero()
+        0u64
     };
-    
-    let participant_yield = if escrow.initial_scspr > U512::zero() {
-        (total_yield * contribution.scspr_received) / escrow.initial_scspr
-    } else {
-        U512::zero()
-    };
-    
-    let total_withdrawal = contribution.scspr_received + participant_yield;
-    
-    transfer_scspr_to_participant(caller, total_withdrawal);
-    
-    contribution.withdrawn = true;
-    storage::dictionary_put(contribution_dict, &contribution_key, serialize_contribution(&contribution));
-    
-    emit_withdrawal_made(&escrow_code, caller, total_withdrawal);
+
+    let participant_yield_key = escrow_participant_yield_key(escrow_id, participant);
+    let participant_yield_uref = storage::new_uref(participant_yield);
+    runtime::put_key(&participant_yield_key, participant_yield_uref.into());
+
+    let target_purse = runtime::get_named_arg::<casper_types::URef>(ARG_PURSE);
+
+    let escrow_purse_key = escrow_purse_key(escrow_id);
+    let escrow_purse_storage_key = runtime::get_key(&escrow_purse_key).unwrap_or_revert();
+    let escrow_purse = escrow_purse_storage_key.into_uref().unwrap_or_revert();
+
+    system::transfer_from_purse_to_purse(
+        escrow_purse,
+        target_purse,
+        U512::from(staked_amount),
+        None
+    ).unwrap_or_revert();
+
+    if participant_yield > 0 {
+        let yield_purse_key = escrow_yield_purse_key(escrow_id);
+        let yield_purse_storage_key = runtime::get_key(&yield_purse_key).unwrap_or_revert();
+        let yield_purse = yield_purse_storage_key.into_uref().unwrap_or_revert();
+
+        system::transfer_from_purse_to_purse(
+            yield_purse,
+            target_purse,
+            U512::from(participant_yield),
+            None
+        ).unwrap_or_revert();
+    }
+
+    let withdrawn_uref = storage::new_uref(true);
+    runtime::put_key(&withdrawn_key, withdrawn_uref.into());
+
+    let liquid_balance_key = escrow_liquid_balance_key(escrow_id, participant);
+    match runtime::get_key(&liquid_balance_key) {
+        Some(key) => {
+            let uref = key.into_uref().unwrap_or_revert();
+            storage::write(uref, 0u64);
+        }
+        None => {}
+    }
+
+    let total_withdrawal = staked_amount + participant_yield;
+
+    emit_event("withdrawn", escrow_id, &format!("participant:{},principal:{},yield:{},total:{}", participant, staked_amount, participant_yield, total_withdrawal));
+
+    runtime::ret(
+        CLValue::from_t(format!("Withdrawn {} (principal: {}, yield: {}) from escrow {}", total_withdrawal, staked_amount, participant_yield, escrow_id))
+            .unwrap_or_revert(),
+    );
 }
 
-// ============================================================================
-// ENTRY POINT: CANCEL_ESCROW
-// ============================================================================
+#[no_mangle]
+pub extern "C" fn get_participants() {
+    let escrow_id: u64 = runtime::get_named_arg(ARG_ESCROW_ID);
+
+    let participants_key = escrow_participants_key(escrow_id);
+    let participants_storage_key = runtime::get_key(&participants_key).unwrap_or_revert();
+    let participants_uref = participants_storage_key.into_uref().unwrap_or_revert();
+    let participants: Vec<AccountHash> = storage::read(participants_uref)
+        .unwrap_or_revert()
+        .unwrap_or_revert();
+
+    runtime::ret(
+        CLValue::from_t(participants)
+            .unwrap_or_revert(),
+    );
+}
 
 #[no_mangle]
-pub extern "C" fn cancel_escrow() {
-    let caller: AccountHash = runtime::get_caller();
-    let escrow_code: String = runtime::get_named_arg("escrow_code");
-    
-    let escrow_dict = get_or_create_dict(ESCROW_DICT);
-    let escrow_bytes: Vec<u8> = storage::dictionary_get(escrow_dict, &escrow_code)
+pub extern "C" fn get_stake() {
+    let escrow_id: u64 = runtime::get_named_arg(ARG_ESCROW_ID);
+    let participant: AccountHash = runtime::get_named_arg(ARG_PARTICIPANT);
+
+    let stake_key = escrow_stake_key(escrow_id, participant);
+    let stake_storage_key = runtime::get_key(&stake_key).unwrap_or_revert();
+    let stake_uref = stake_storage_key.into_uref().unwrap_or_revert();
+    let staked_amount: u64 = storage::read(stake_uref)
         .unwrap_or_revert()
-        .unwrap_or_else(|| runtime::revert(casper_types::ApiError::User(ERROR_ESCROW_NOT_FOUND)));
-    
-    let mut escrow = deserialize_escrow(&escrow_bytes);
-    
-    // Only creator can cancel
-    if escrow.creator != caller {
-        runtime::revert(casper_types::ApiError::User(ERROR_NOT_CREATOR));
-    }
-    
-    // Can only cancel if not complete
-    if escrow.status != EscrowStatus::Open {
-        runtime::revert(casper_types::ApiError::User(ERROR_CANNOT_CANCEL));
-    }
-    
-    // Get list of all participants who joined
-    let participants = get_participants_list(&escrow_code);
-    let contribution_dict = get_or_create_dict(CONTRIBUTION_DICT);
-    
-    let mut refund_count = 0u8;
-    
-    // Refund each participant
-    for participant in participants.iter() {
-        let contribution_key = alloc::format!("{}:{}", escrow_code, participant);
-        
-        // Get participant's contribution
-        let contribution_bytes: Option<Vec<u8>> = storage::dictionary_get(contribution_dict, &contribution_key)
+        .unwrap_or_revert();
+
+    runtime::ret(
+        CLValue::from_t(staked_amount)
+            .unwrap_or_revert(),
+    );
+}
+
+#[no_mangle]
+pub extern "C" fn get_liquid_balance() {
+    let escrow_id: u64 = runtime::get_named_arg(ARG_ESCROW_ID);
+    let participant: AccountHash = runtime::get_named_arg(ARG_PARTICIPANT);
+
+    let liquid_balance_key = escrow_liquid_balance_key(escrow_id, participant);
+    let liquid_storage_key = runtime::get_key(&liquid_balance_key).unwrap_or_revert();
+    let liquid_uref = liquid_storage_key.into_uref().unwrap_or_revert();
+    let liquid_amount: u64 = storage::read(liquid_uref)
+        .unwrap_or_revert()
+        .unwrap_or_revert();
+
+    runtime::ret(
+        CLValue::from_t(liquid_amount)
+            .unwrap_or_revert(),
+    );
+}
+
+#[no_mangle]
+pub extern "C" fn get_yield() {
+    let escrow_id: u64 = runtime::get_named_arg(ARG_ESCROW_ID);
+    let participant: AccountHash = runtime::get_named_arg(ARG_PARTICIPANT);
+
+    let stake_key = escrow_stake_key(escrow_id, participant);
+    let stake_storage_key = runtime::get_key(&stake_key).unwrap_or_revert();
+    let stake_uref = stake_storage_key.into_uref().unwrap_or_revert();
+    let staked_amount: u64 = storage::read(stake_uref)
+.unwrap_or_revert()
+.unwrap_or_revert();
+let total_staked_key = escrow_total_staked_key(escrow_id);
+let total_staked_storage_key = runtime::get_key(&total_staked_key).unwrap_or_revert();
+let total_staked_uref = total_staked_storage_key.into_uref().unwrap_or_revert();
+let total_staked: u64 = storage::read(total_staked_uref)
+    .unwrap_or_revert()
+    .unwrap_or_revert();
+
+let total_yield_key = escrow_total_yield_key(escrow_id);
+let total_yield_storage_key = runtime::get_key(&total_yield_key).unwrap_or_revert();
+let total_yield_uref = total_yield_storage_key.into_uref().unwrap_or_revert();
+let total_yield: u64 = storage::read(total_yield_uref)
+    .unwrap_or_revert()
+    .unwrap_or_revert();
+
+let participant_yield = if total_staked > 0 {
+    (staked_amount * total_yield) / total_staked
+} else {
+    0u64
+};
+
+runtime::ret(
+    CLValue::from_t(participant_yield)
+        .unwrap_or_revert(),
+);
+}
+#[no_mangle]
+pub extern "C" fn get_escrow_balance() {
+let escrow_id: u64 = runtime::get_named_arg(ARG_ESCROW_ID);
+let escrow_purse_key = escrow_purse_key(escrow_id);
+let escrow_purse_storage_key = runtime::get_key(&escrow_purse_key).unwrap_or_revert();
+let escrow_purse = escrow_purse_storage_key.into_uref().unwrap_or_revert();
+let balance = system::get_purse_balance(escrow_purse).unwrap_or_revert();
+let balance_u64: u64 = balance.as_u64();
+
+runtime::ret(
+    CLValue::from_t(balance_u64)
+        .unwrap_or_revert(),
+);
+}
+#[no_mangle]
+pub extern "C" fn get_participant_yield() {
+let escrow_id: u64 = runtime::get_named_arg(ARG_ESCROW_ID);
+let participant: AccountHash = runtime::get_named_arg(ARG_PARTICIPANT);
+let participant_yield_key = escrow_participant_yield_key(escrow_id, participant);
+
+match runtime::get_key(&participant_yield_key) {
+    Some(key) => {
+        let uref = key.into_uref().unwrap_or_revert();
+        let yield_amount: u64 = storage::read(uref)
+            .unwrap_or_revert()
             .unwrap_or_revert();
         
-        if let Some(bytes) = contribution_bytes {
-            let contribution = deserialize_contribution(&bytes);
-            
-            // Unstake sCSPR back to CSPR
-            let cspr_amount = unstake_scspr_to_cspr(contribution.scspr_received);
-            
-            // Transfer CSPR back to participant
-            let contract_purse = get_contract_purse();
-            system::transfer_from_purse_to_account(
-                contract_purse,
-                *participant,
-                cspr_amount,
-                None,
-            )
-            .unwrap_or_else(|_| runtime::revert(casper_types::ApiError::User(ERROR_TRANSFER_FAILED)));
-            
-            refund_count += 1;
-        }
+        runtime::ret(
+            CLValue::from_t(yield_amount)
+                .unwrap_or_revert(),
+        );
     }
-    
-    escrow.status = EscrowStatus::Cancelled;
-    storage::dictionary_put(escrow_dict, &escrow_code, serialize_escrow(&escrow));
-    
-    emit_escrow_cancelled(&escrow_code, refund_count);
+    None => {
+        runtime::ret(
+            CLValue::from_t(0u64)
+                .unwrap_or_revert(),
+        );
+    }
 }
-
-// ============================================================================
-// QUERY FUNCTIONS
-// ============================================================================
-
+}
 #[no_mangle]
-pub extern "C" fn get_escrow_info() {
-    let escrow_code: String = runtime::get_named_arg("escrow_code");
-    
-    let escrow_dict = get_or_create_dict(ESCROW_DICT);
-    let escrow_bytes: Vec<u8> = storage::dictionary_get(escrow_dict, &escrow_code)
-        .unwrap_or_revert()
-        .unwrap_or_else(|| runtime::revert(casper_types::ApiError::User(ERROR_ESCROW_NOT_FOUND)));
-    
-    let escrow = deserialize_escrow(&escrow_bytes);
-    
-    // Return escrow info as JSON-like string
-    let info = alloc::format!(
-        "{{\"creator\":\"{:?}\",\"total_amount\":\"{}\",\"split_amount\":\"{}\",\"num_friends\":{},\"joined_count\":{},\"status\":{},\"accumulated_scspr\":\"{}\",\"initial_scspr\":\"{}\",\"created_timestamp\":{}}}",
-        escrow.creator, escrow.total_amount, escrow.split_amount, escrow.num_friends, 
-        escrow.joined_count, escrow.status as u8, escrow.accumulated_scspr, 
-        escrow.initial_scspr, escrow.created_timestamp
-    );
-    
-    runtime::ret(CLValue::from_t(info).unwrap_or_revert());
+pub extern "C" fn get_contract_purse() {
+let purse = get_main_purse();
+runtime::ret(
+    CLValue::from_t(purse)
+        .unwrap_or_revert(),
+);
 }
-
-#[no_mangle]
-pub extern "C" fn get_participant_status() {
-    let escrow_code: String = runtime::get_named_arg("escrow_code");
-    let participant_str: String = runtime::get_named_arg("participant");
-    
-    // Parse participant string to AccountHash
-    let participant = AccountHash::from_formatted_str(&participant_str)
-        .unwrap_or_else(|_| runtime::revert(casper_types::ApiError::User(ERROR_PARTICIPANT_NOT_FOUND)));
-    
-    let contribution_dict = get_or_create_dict(CONTRIBUTION_DICT);
-    let contribution_key = alloc::format!("{}:{}", escrow_code, participant);
-    
-    let contribution_bytes: Option<Vec<u8>> = storage::dictionary_get(contribution_dict, &contribution_key)
-        .unwrap_or_revert();
-    
-    if contribution_bytes.is_none() {
-        runtime::ret(CLValue::from_t("not_joined".to_string()).unwrap_or_revert());
-        return;
-    }
-    
-    let contribution = deserialize_contribution(&contribution_bytes.unwrap());
-    
-    let status = alloc::format!(
-        "{{\"cspr_contributed\":\"{}\",\"scspr_received\":\"{}\",\"withdrawn\":{}}}",
-        contribution.cspr_contributed, contribution.scspr_received, contribution.withdrawn
-    );
-    
-    runtime::ret(CLValue::from_t(status).unwrap_or_revert());
-}
-
-#[no_mangle]
-pub extern "C" fn list_user_escrows() {
-    let user_str: String = runtime::get_named_arg("user");
-    
-    // Parse user string to AccountHash
-    let user = AccountHash::from_formatted_str(&user_str)
-        .unwrap_or_else(|_| runtime::revert(casper_types::ApiError::User(ERROR_PARTICIPANT_NOT_FOUND)));
-    
-    let user_escrows_dict = get_or_create_dict(USER_ESCROWS_DICT);
-    let user_key = alloc::format!("{:?}", user);
-    
-    let escrow_list: Option<Vec<String>> = storage::dictionary_get(user_escrows_dict, &user_key)
-        .unwrap_or_revert();
-    
-    let result = match escrow_list {
-        Some(list) => {
-            let joined_list = list.join(",");
-            alloc::format!("[{}]", joined_list)
-        }
-        None => "[]".to_string(),
-    };
-    
-    runtime::ret(CLValue::from_t(result).unwrap_or_revert());
-}
-
-// ============================================================================
-// ADMIN FUNCTIONS
-// ============================================================================
-
-/// Set liquid staking contract hash (admin only - called during setup)
-#[no_mangle]
-pub extern "C" fn set_liquid_staking_contract() {
-    let contract_hash: ContractHash = runtime::get_named_arg("contract_hash");
-    
-    // Store the contract hash
-    runtime::put_key(LIQUID_STAKING_CONTRACT, Key::Hash(contract_hash.value()));
-}
-
-/// Set sCSPR token contract hash (admin only - called during setup)
-#[no_mangle]
-pub extern "C" fn set_scspr_token_contract() {
-    let contract_hash: ContractHash = runtime::get_named_arg("contract_hash");
-    
-    // Store the contract hash
-    runtime::put_key(SCSPR_TOKEN_CONTRACT, Key::Hash(contract_hash.value()));
-}
-
-// ============================================================================
-// LIQUID STAKING INTEGRATION
-// ============================================================================
-
-/// Get liquid staking contract hash from storage
-fn get_liquid_staking_contract() -> Option<ContractHash> {
-    match runtime::get_key(LIQUID_STAKING_CONTRACT) {
-        Some(Key::Hash(hash_bytes)) => Some(ContractHash::new(hash_bytes)),
-        _ => None,
-    }
-}
-
-/// Get sCSPR token contract hash from storage
-fn get_scspr_token_contract() -> Option<ContractHash> {
-    match runtime::get_key(SCSPR_TOKEN_CONTRACT) {
-        Some(Key::Hash(hash_bytes)) => Some(ContractHash::new(hash_bytes)),
-        _ => None,
-    }
-}
-
-/// Stake CSPR to receive sCSPR via Casper Liquid Staking
-fn stake_cspr_to_scspr(cspr_amount: U512) -> U512 {
-    match get_liquid_staking_contract() {
-        Some(staking_contract) => {
-            // Call liquid staking contract with error handling
-            let result: Result<U512, casper_types::ApiError> = runtime::call_contract(
-                staking_contract,
-                "stake",
-                runtime_args! {
-                    "amount" => cspr_amount,
-                },
-            );
-            
-            match result {
-                Ok(scspr_amount) => scspr_amount,
-                Err(_) => {
-                    runtime::revert(casper_types::ApiError::User(ERROR_STAKING_FAILED));
-                }
-            }
-        }
-        None => {
-            // Fallback: 1:1 ratio for testing when liquid staking not configured
-            // In production, this should revert
-            cspr_amount
-        }
-    }
-}
-
-/// Unstake sCSPR back to CSPR (for refunds)
-fn unstake_scspr_to_cspr(scspr_amount: U512) -> U512 {
-    match get_liquid_staking_contract() {
-        Some(staking_contract) => {
-            let result: Result<U512, casper_types::ApiError> = runtime::call_contract(
-                staking_contract,
-                "unstake",
-                runtime_args! {
-                    "amount" => scspr_amount,
-                },
-            );
-            
-            match result {
-                Ok(cspr_amount) => cspr_amount,
-                Err(_) => {
-                    runtime::revert(casper_types::ApiError::User(ERROR_UNSTAKING_FAILED));
-                }
-            }
-        }
-        None => {
-            // Fallback: 1:1 ratio for testing
-            scspr_amount
-        }
-    }
-}
-
-/// Get current sCSPR balance of the contract
-fn get_current_scspr_balance() -> U512 {
-    match get_scspr_token_contract() {
-        Some(scspr_contract) => {
-            // Query the contract's own purse balance, not the caller
-            let contract_purse = get_contract_purse();
-            
-            let result: Result<U512, casper_types::ApiError> = runtime::call_contract(
-                scspr_contract,
-                "balance_of",
-                runtime_args! {
-                    "purse" => contract_purse,
-                },
-            );
-            
-            match result {
-                Ok(balance) => balance,
-                Err(_) => {
-                    runtime::revert(casper_types::ApiError::User(ERROR_BALANCE_QUERY_FAILED));
-                }
-            }
-        }
-        None => {
-            // Fallback: simulate 5% yield for testing
-            U512::from(1050)
-        }
-    }
-}
-
-/// Transfer sCSPR to a specific participant
-fn transfer_scspr_to_participant(recipient: AccountHash, amount: U512) {
-    match get_scspr_token_contract() {
-        Some(scspr_contract) => {
-            let result: Result<(), casper_types::ApiError> = runtime::call_contract(
-                scspr_contract,
-                "transfer",
-                runtime_args! {
-                    "recipient" => Key::Account(recipient),
-                    "amount" => amount,
-                },
-            );
-            
-            if result.is_err() {
-                runtime::revert(casper_types::ApiError::User(ERROR_TRANSFER_FAILED));
-            }
-        }
-        None => {
-            // Fallback: assume transfer succeeds for testing
-        }
-    }
-}
-
-// ============================================================================
-// CONTRACT INSTALLATION
-// ============================================================================
-
+/// ================= INSTALL CONTRACT =================
 #[no_mangle]
 pub extern "C" fn call() {
-    let mut entry_points = EntryPoints::new();
-    
-    entry_points.add_entry_point(EntryPoint::new(
-        "create_escrow",
+let mut entry_points = EntryPoints::new();
+entry_points.add_entry_point(
+    EntryPoint::new(
+        EP_CREATE_ESCROW,
         vec![
-            Parameter::new("total_amount", CLType::U256),
-            Parameter::new("num_friends", CLType::U8),
-            Parameter::new("password", CLType::String), // New: password parameter
+            Parameter::new(ARG_ESCROW_ID, CLType::U64),
+            Parameter::new(ARG_AMOUNT, CLType::U64),
+            Parameter::new(ARG_TARGET_AMOUNT, CLType::U64),
         ],
         CLType::String,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
-    ));
-    
-    entry_points.add_entry_point(EntryPoint::new(
-        "join_escrow",
+        EntryPointType::Called,
+    )
+    .into(),
+);
+
+entry_points.add_entry_point(
+    EntryPoint::new(
+        EP_JOIN_ESCROW,
         vec![
-            Parameter::new("escrow_code", CLType::String),
-            Parameter::new("amount", CLType::U512),
-            Parameter::new("password", CLType::String), // New: password parameter
+            Parameter::new(ARG_ESCROW_ID, CLType::U64),
         ],
         CLType::Unit,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
-    ));
-    
-    entry_points.add_entry_point(EntryPoint::new(
-        "withdraw",
+        EntryPointType::Called,
+    )
+    .into(),
+);
+
+entry_points.add_entry_point(
+    EntryPoint::new(
+        EP_STAKE,
         vec![
-            Parameter::new("escrow_code", CLType::String),
-        ],
-        CLType::Unit,
-        EntryPointAccess::Public,
-        EntryPointType::Contract,
-    ));
-    
-    entry_points.add_entry_point(EntryPoint::new(
-        "cancel_escrow",
-        vec![
-            Parameter::new("escrow_code", CLType::String),
-        ],
-        CLType::Unit,
-        EntryPointAccess::Public,
-        EntryPointType::Contract,
-    ));
-    
-    entry_points.add_entry_point(EntryPoint::new(
-        "get_escrow_info",
-        vec![
-            Parameter::new("escrow_code", CLType::String),
+            Parameter::new(ARG_ESCROW_ID, CLType::U64),
+            Parameter::new(ARG_AMOUNT, CLType::U64),
+            Parameter::new(ARG_PARTICIPANT, CLType::Key),
+            Parameter::new(ARG_PURSE, CLType::URef),
         ],
         CLType::String,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
-    ));
-    
-    entry_points.add_entry_point(EntryPoint::new(
-        "get_participant_status",
+        EntryPointType::Called,
+    )
+    .into(),
+);
+
+entry_points.add_entry_point(
+    EntryPoint::new(
+        EP_REFUND,
         vec![
-            Parameter::new("escrow_code", CLType::String),
-            Parameter::new("participant", CLType::String), // Use string representation
+            Parameter::new(ARG_ESCROW_ID, CLType::U64),
+            Parameter::new(ARG_PARTICIPANT, CLType::Key),
+            Parameter::new(ARG_PURSE, CLType::URef),
         ],
         CLType::String,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
-    ));
-    
-    entry_points.add_entry_point(EntryPoint::new(
-        "list_user_escrows",
+        EntryPointType::Called,
+    )
+    .into(),
+);
+
+entry_points.add_entry_point(
+    EntryPoint::new(
+        EP_DEPOSIT_YIELD,
         vec![
-            Parameter::new("user", CLType::String), // Use string representation
+            Parameter::new(ARG_ESCROW_ID, CLType::U64),
+            Parameter::new(ARG_AMOUNT, CLType::U64),
+            Parameter::new(ARG_PURSE, CLType::URef),
         ],
         CLType::String,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
-    ));
-    
-    // Admin entry points for configuration
-    entry_points.add_entry_point(EntryPoint::new(
-        "set_liquid_staking_contract",
+        EntryPointType::Called,
+    )
+    .into(),
+);
+
+entry_points.add_entry_point(
+    EntryPoint::new(
+        EP_COMPLETE_ESCROW,
         vec![
-            Parameter::new("contract_hash", CLType::ByteArray(32)),
+            Parameter::new(ARG_ESCROW_ID, CLType::U64),
         ],
-        CLType::Unit,
+        CLType::String,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
-    ));
-    
-    entry_points.add_entry_point(EntryPoint::new(
-        "set_scspr_token_contract",
+        EntryPointType::Called,
+    )
+    .into(),
+);
+
+entry_points.add_entry_point(
+    EntryPoint::new(
+        EP_WITHDRAW,
         vec![
-            Parameter::new("contract_hash", CLType::ByteArray(32)),
+            Parameter::new(ARG_ESCROW_ID, CLType::U64),
+            Parameter::new(ARG_PARTICIPANT, CLType::Key),
+            Parameter::new(ARG_PURSE, CLType::URef),
         ],
-        CLType::Unit,
+        CLType::String,
         EntryPointAccess::Public,
-        EntryPointType::Contract,
-    ));
-    
-    let mut named_keys = NamedKeys::new();
-    
-    // Create contract purse during installation
-    let contract_purse = system::create_purse();
-    named_keys.insert(CONTRACT_PURSE.to_string(), contract_purse.into());
-    
-    let (contract_hash, contract_version) = storage::new_contract(
-        entry_points,
-        Some(named_keys),
-        Some(CONTRACT_PACKAGE_NAME.to_string()),
-        Some(CONTRACT_VERSION_KEY.to_string()),
-    );
-    
-    runtime::put_key("group_escrow_contract", contract_hash.into());
-    runtime::put_key("group_escrow_contract_version", storage::new_uref(contract_version).into());
+        EntryPointType::Called,
+    )
+    .into(),
+);
+
+entry_points.add_entry_point(
+    EntryPoint::new(
+        EP_GET_PARTICIPANTS,
+        vec![
+            Parameter::new(ARG_ESCROW_ID, CLType::U64),
+        ],
+        CLType::List(Box::new(CLType::Key)),
+        EntryPointAccess::Public,
+        EntryPointType::Called,
+    )
+    .into(),
+);
+
+entry_points.add_entry_point(
+    EntryPoint::new(
+        EP_GET_STAKE,
+        vec![
+            Parameter::new(ARG_ESCROW_ID, CLType::U64),
+            Parameter::new(ARG_PARTICIPANT, CLType::Key),
+        ],
+        CLType::U64,
+        EntryPointAccess::Public,
+        EntryPointType::Called,
+    )
+    .into(),
+);
+
+entry_points.add_entry_point(
+    EntryPoint::new(
+        EP_GET_LIQUID_BALANCE,
+        vec![
+            Parameter::new(ARG_ESCROW_ID, CLType::U64),
+            Parameter::new(ARG_PARTICIPANT, CLType::Key),
+        ],
+        CLType::U64,
+        EntryPointAccess::Public,
+        EntryPointType::Called,
+    )
+    .into(),
+);
+
+entry_points.add_entry_point(
+    EntryPoint::new(
+        EP_GET_YIELD,
+        vec![
+            Parameter::new(ARG_ESCROW_ID, CLType::U64),
+            Parameter::new(ARG_PARTICIPANT, CLType::Key),
+        ],
+        CLType::U64,
+        EntryPointAccess::Public,
+        EntryPointType::Called,
+    )
+    .into(),
+);
+
+entry_points.add_entry_point(
+    EntryPoint::new(
+        EP_GET_ESCROW_BALANCE,
+        vec![
+            Parameter::new(ARG_ESCROW_ID, CLType::U64),
+        ],
+        CLType::U64,
+        EntryPointAccess::Public,
+        EntryPointType::Called,
+    )
+    .into(),
+);
+
+entry_points.add_entry_point(
+    EntryPoint::new(
+        EP_GET_PARTICIPANT_YIELD,
+        vec![
+            Parameter::new(ARG_ESCROW_ID, CLType::U64),
+            Parameter::new(ARG_PARTICIPANT, CLType::Key),
+        ],
+        CLType::U64,
+        EntryPointAccess::Public,
+        EntryPointType::Called,
+    )
+    .into(),
+);
+
+entry_points.add_entry_point(
+    EntryPoint::new(
+        EP_GET_CONTRACT_PURSE,
+        vec![],
+        CLType::URef,
+        EntryPointAccess::Public,
+        EntryPointType::Called,
+    )
+    .into(),
+);
+
+let named_keys = NamedKeys::new();
+
+let (contract_hash, contract_version) = storage::new_contract(
+    entry_points,
+    Some(named_keys),
+    Some(CONTRACT_PACKAGE_KEY.to_string()),
+    Some(CONTRACT_ACCESS_KEY.to_string()),
+    None,
+);
+
+runtime::put_key(CONTRACT_KEY, contract_hash.into());
+
+let version_uref = storage::new_uref(contract_version);
+runtime::put_key(CONTRACT_VERSION_KEY, version_uref.into());
+
+let main_purse = system::create_purse();
+runtime::put_key(CONTRACT_PURSE_KEY, main_purse.into());
 }

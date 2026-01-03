@@ -42,9 +42,24 @@ next-env.d.ts
 
 # rust
 /target/
+**/target/
 **/*.rs.bk
 Cargo.lock
 *.pdb
+*.wasm
+
+# Casper contract build artifacts
+escrow_contract/contract/target/
+escrow_contract/tests/wasm/
+escrow_contract/tests/target/
+
+# Casper keys (NEVER commit private keys!)
+keys/
+*.pem
+secret_key.pem
+public_key.pem
+**/keys/
+**/*.pem
 
 # IDE
 .vscode/
