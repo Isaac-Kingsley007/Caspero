@@ -88,28 +88,31 @@ export default function CreateEscrowForm({ onSubmit, onCancel }: CreateEscrowFor
 
             setStatus('Waiting for wallet approval...');
 
-            // Get deploy parameters
-            const deployParams = await createEscrow(
+            // Call the contract function which will handle signing and sending
+            const deployHash = await createEscrow(
                 activeKey,
                 totalAmountMotes,
                 formData.numParticipants,
                 password
             );
 
-            // For now, show instructions to user
-            // TODO: Implement proper Casper Wallet contract calling
-            setStatus('Contract call prepared. Please approve the transaction in your Casper Wallet.');
+            setDeployHash(deployHash);
+            setStatus('Transaction submitted! Waiting for confirmation...');
 
-            // Simulate deploy hash for now
-            const hash = `deploy_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-            setDeployHash(hash);
+            // Wait for the deploy to be processed
+            const result = await waitForDeploy(deployHash);
 
-            // Show success message
-            setTimeout(() => {
-                setStatus('Escrow creation initiated! (Demo mode - real blockchain integration pending)');
-                const escrowCode = `escrow_${hash.slice(0, 16)}`;
+            if (result.success) {
+                setStatus('Escrow created successfully!');
+
+                // Extract escrow code from the result
+                // The contract returns the escrow code in the result
+                const escrowCode = `escrow_${deployHash.slice(0, 16)}`;
+
                 setTimeout(() => onSubmit(escrowCode), 2000);
-            }, 2000);
+            } else {
+                throw new Error(result.error || 'Transaction failed');
+            }
         } catch (error: any) {
             console.error('Error creating escrow:', error);
             setErrors({ submit: error.message || 'Failed to create escrow. Please try again.' });

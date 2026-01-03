@@ -33,6 +33,10 @@ interface CasperWalletProvider {
     signatureHex: string;
     signature: Uint8Array;
   }>;
+  sign(
+    deployJSON: string,
+    signingPublicKeyHex: string
+  ): Promise<string>;
 }
 
 declare global {
@@ -224,7 +228,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   );
 
   const signDeploy = useCallback(
-    async (deploy: any): Promise<any> => {
+    async (deployJSON: string): Promise<string | null> => {
       const provider = getProvider();
       if (!provider || !state.activeKey) {
         setError('Wallet not connected');
@@ -232,13 +236,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       }
 
       try {
-        // For now, this is a mock implementation
-        // In a real implementation, this would sign the deploy using the wallet
-        console.log('Mock signDeploy:', deploy);
-        return {
-          signature: 'mock_signature_' + Date.now(),
-          deploy
-        };
+        const signedDeployJSON = await provider.sign(deployJSON, state.activeKey);
+        return signedDeployJSON;
       } catch (e) {
         console.error('Deploy signing failed:', e);
         setError('Deploy signing failed');

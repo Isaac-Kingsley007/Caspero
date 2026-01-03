@@ -83,8 +83,8 @@ When all participants have joined:
 |-------|------------|
 | Blockchain | Casper Network |
 | Smart Contracts | Rust (casper-contract, casper-types) |
-| Frontend | Next.js, React |
-| Wallet | Casper Wallet (Signer) |
+| Frontend | Next.js|
+| Wallet | Casper Wallet|
 | SDK | casper-js-sdk |
 
 ## 🧪 Demo Flow (Hackathon MVP)
@@ -111,7 +111,7 @@ When all participants have joined:
 - **Cross-chain deposits**: Accept other tokens
 - **Mobile app**: Native iOS/Android experience
 - **Expense oracles**: Real-world payment automation
-- **NFT participation**: Proof of group membership
+
 
 ## 🏁 Why This Matters
 

@@ -63,26 +63,26 @@ export default function JoinEscrowForm({
         try {
             setStatus('Waiting for wallet approval...');
 
-            // Get deploy parameters
-            const deployParams = await joinEscrow(
+            // Call the contract function which will handle signing and sending
+            const deployHash = await joinEscrow(
                 activeKey,
                 escrowCode,
                 splitAmount, // splitAmount is already in motes
                 hasPassword ? password : ''
             );
 
-            // For now, show instructions to user
-            setStatus('Contract call prepared. Please approve the transaction in your Casper Wallet.');
+            setDeployHash(deployHash);
+            setStatus('Transaction submitted! Waiting for confirmation...');
 
-            // Simulate deploy hash for now
-            const hash = `deploy_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-            setDeployHash(hash);
+            // Wait for the deploy to be processed
+            const result = await waitForDeploy(deployHash);
 
-            // Show success message
-            setTimeout(() => {
-                setStatus('Successfully joined escrow! (Demo mode - real blockchain integration pending)');
-                setTimeout(() => onSubmit(hash), 2000);
-            }, 2000);
+            if (result.success) {
+                setStatus('Successfully joined escrow!');
+                setTimeout(() => onSubmit(deployHash), 2000);
+            } else {
+                throw new Error(result.error || 'Transaction failed');
+            }
 
         } catch (error) {
             console.error('Failed to join escrow:', error);
