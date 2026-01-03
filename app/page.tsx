@@ -42,6 +42,8 @@ export default function Home() {
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [participants, setParticipants] = useState<ParticipantData[]>([]);
+  const [searchCode, setSearchCode] = useState('');
+  const [searchError, setSearchError] = useState('');
 
   // Load escrows on component mount
   useEffect(() => {
@@ -83,6 +85,38 @@ export default function Home() {
       setEscrows(mockEscrows);
     } catch (error) {
       console.error('Failed to load escrows:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSearch = async () => {
+    if (!searchCode.trim()) {
+      setSearchError('Please enter an escrow code');
+      return;
+    }
+
+    setSearchError('');
+    setLoading(true);
+
+    try {
+      // TODO: Query contract for escrow info
+      // const escrowInfo = await getEscrowInfo(searchCode.trim());
+
+      // For now, simulate search
+      const found = escrows.find(e =>
+        e.escrowCode.toLowerCase() === searchCode.trim().toLowerCase()
+      );
+
+      if (found) {
+        setSelectedEscrow(found);
+        setShowDetailsModal(true);
+      } else {
+        setSearchError('Escrow not found. Please check the code and try again.');
+      }
+    } catch (error) {
+      console.error('Search failed:', error);
+      setSearchError('Failed to search for escrow. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -159,6 +193,37 @@ export default function Home() {
           </p>
         </div>
       )}
+
+      {/* Search Bar */}
+      <div className="mb-6">
+        <div className="flex gap-3">
+          <div className="flex-1">
+            <input
+              type="text"
+              placeholder="Search by escrow code (e.g., escrow_1234abcd)"
+              value={searchCode}
+              onChange={(e) => {
+                setSearchCode(e.target.value);
+                setSearchError('');
+              }}
+              className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+            />
+          </div>
+          <Button
+            variant="primary"
+            onClick={handleSearch}
+            disabled={!searchCode.trim()}
+          >
+            <span className="flex items-center gap-2">
+              <span>🔍</span>
+              Search
+            </span>
+          </Button>
+        </div>
+        {searchError && (
+          <p className="mt-2 text-sm text-red-400">{searchError}</p>
+        )}
+      </div>
 
       {/* Filters */}
       <div className="flex gap-3 mb-6">

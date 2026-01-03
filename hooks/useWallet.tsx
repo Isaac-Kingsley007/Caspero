@@ -114,7 +114,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
       await fetchBalance(activeKey);
     } catch (e) {
-      console.error('Connection check failed:', e);
+      // Silently handle connection check errors (wallet might not be unlocked yet)
+      if (e && typeof e === 'object' && Object.keys(e).length > 0) {
+        console.error('Connection check failed:', e);
+      }
     }
   }, [getProvider, fetchBalance]);
 
