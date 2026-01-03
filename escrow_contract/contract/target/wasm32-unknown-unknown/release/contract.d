@@ -1,1 +1,0 @@
-/mnt/c/Users/Hari\ Ram/Documents/caspero/Caspero/escrow_contract/contract/target/wasm32-unknown-unknown/release/contract.wasm: /mnt/c/Users/Hari\ Ram/Documents/caspero/Caspero/escrow_contract/contract/src/main.rs
