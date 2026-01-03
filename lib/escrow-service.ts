@@ -7,13 +7,14 @@ import {
   getEscrowInfo, 
   getParticipantStatus, 
   getUserEscrows,
-  createEscrowDeploy,
-  joinEscrowDeploy,
-  withdrawDeploy,
-  cancelEscrowDeploy,
+  createEscrowDeployParams,
+  joinEscrowDeployParams,
+  withdrawDeployParams,
+  cancelEscrowDeployParams,
   waitForDeploy,
   EscrowInfo,
-  ParticipantStatus
+  ParticipantStatus,
+  DeployParams
 } from './casper-client';
 import { 
   supabase, 
@@ -55,11 +56,11 @@ export class EscrowService {
   static async createEscrow(
     params: CreateEscrowParams,
     publicKey: string,
-    signTransaction: (deploy: any) => Promise<SendResult>
+    signTransaction: (deployParams: DeployParams) => Promise<SendResult>
   ): Promise<{ success: boolean; deployHash?: string; error?: string }> {
     try {
-      // Create the deploy
-      const deploy = createEscrowDeploy(
+      // Create the deploy parameters
+      const deployParams = createEscrowDeployParams(
         publicKey,
         params.escrowCode,
         params.totalAmount,
@@ -69,7 +70,7 @@ export class EscrowService {
       );
 
       // Sign and send the transaction
-      const result = await signTransaction(deploy);
+      const result = await signTransaction(deployParams);
       
       if (result.deployHash) {
         // Wait for the transaction to be processed
@@ -101,11 +102,11 @@ export class EscrowService {
   static async joinEscrow(
     params: JoinEscrowParams,
     publicKey: string,
-    signTransaction: (deploy: any) => Promise<SendResult>
+    signTransaction: (deployParams: DeployParams) => Promise<SendResult>
   ): Promise<{ success: boolean; deployHash?: string; error?: string }> {
     try {
-      // Create the deploy
-      const deploy = joinEscrowDeploy(
+      // Create the deploy parameters
+      const deployParams = joinEscrowDeployParams(
         publicKey,
         params.escrowCode,
         params.amount,
@@ -113,7 +114,7 @@ export class EscrowService {
       );
 
       // Sign and send the transaction
-      const result = await signTransaction(deploy);
+      const result = await signTransaction(deployParams);
       
       if (result.deployHash) {
         // Wait for the transaction to be processed
@@ -146,14 +147,14 @@ export class EscrowService {
   static async withdrawFromEscrow(
     escrowCode: string,
     publicKey: string,
-    signTransaction: (deploy: any) => Promise<SendResult>
+    signTransaction: (deployParams: DeployParams) => Promise<SendResult>
   ): Promise<{ success: boolean; deployHash?: string; error?: string }> {
     try {
-      // Create the deploy
-      const deploy = withdrawDeploy(publicKey, escrowCode);
+      // Create the deploy parameters
+      const deployParams = withdrawDeployParams(publicKey, escrowCode);
 
       // Sign and send the transaction
-      const result = await signTransaction(deploy);
+      const result = await signTransaction(deployParams);
       
       if (result.deployHash) {
         // Wait for the transaction to be processed
@@ -185,14 +186,14 @@ export class EscrowService {
   static async cancelEscrow(
     escrowCode: string,
     publicKey: string,
-    signTransaction: (deploy: any) => Promise<SendResult>
+    signTransaction: (deployParams: DeployParams) => Promise<SendResult>
   ): Promise<{ success: boolean; deployHash?: string; error?: string }> {
     try {
-      // Create the deploy
-      const deploy = cancelEscrowDeploy(publicKey, escrowCode);
+      // Create the deploy parameters
+      const deployParams = cancelEscrowDeployParams(publicKey, escrowCode);
 
       // Sign and send the transaction
-      const result = await signTransaction(deploy);
+      const result = await signTransaction(deployParams);
       
       if (result.deployHash) {
         // Wait for the transaction to be processed
